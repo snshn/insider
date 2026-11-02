@@ -1,4 +1,6 @@
-# anatomy
+# insider
+
+![Insider TUI snapshot](assets/snapshots/gui.png)
 
 A realtime TUI hardware inspector that draws your mainboard. Ratatui, Linux, 0BSD.
 
@@ -21,8 +23,8 @@ voltage/cycles/health, USB speed and drivers, and so on.
 ## Build & run
 
     cargo build --release
-    ./target/release/anatomy
-    sudo ./target/release/anatomy      # adds RAM SPD timings and CPU package power
+    ./target/release/insider
+    sudo ./target/release/insider      # adds RAM SPD timings and CPU package power
 
 Optional tools it uses when present: `lspci` (pciutils), `lsusb` (usbutils),
 `udevadm` (systemd), `dmidecode`, `nvidia-smi`.
@@ -46,20 +48,20 @@ needs a proper layout.
 * **RAM timings** come from the SPD EEPROM: `sudo modprobe ee1004` (DDR4) or
   `spd5118` (DDR5), then run with sudo. Without it you still get size, type,
   speed, part number and slot from SMBIOS (via udev, no root needed).
-* **NVIDIA Optimus**: when the dGPU is runtime-suspended (D3) anatomy leaves it
+* **NVIDIA Optimus**: when the dGPU is runtime-suspended (D3) insider leaves it
   alone and shows "asleep". When it is awake it polls `nvidia-smi` every ~5 s;
   use `--no-nvidia-smi` if you'd rather never touch it.
-* `ANATOMY_SYSROOT=/path` reads `/sys` and `/proc` from a captured tree, and
-  `$ANATOMY_SYSROOT/cmd/<tool>` as that tool's recorded output. Handy for
+* `INSIDER_SYSROOT=/path` reads `/sys` and `/proc` from a captured tree, and
+  `$INSIDER_SYSROOT/cmd/<tool>` as that tool's recorded output. Handy for
   developing layouts for machines you don't have.
 
 ## Board layouts
 
-Layouts are TOML files. anatomy picks one itself: a layout whose `[[match]]`
+Layouts are TOML files. insider picks one itself: a layout whose `[[match]]`
 fits the machine's DMI data wins; otherwise it falls back to a generic stand-in
 chosen from what it found (SODIMM/CAMM memory, a battery or a laptop chassis
 type mean a laptop board, otherwise ATX). Built-ins: `stock-laptop` and
-`stock-atx`. Your own go in `~/.config/anatomy/boards/` (or `./boards/`); a
+`stock-atx`. Your own go in `~/.config/insider/boards/` (or `./boards/`); a
 file with the same id (file stem) as a built-in replaces it.
 
 ```toml
@@ -97,7 +99,7 @@ bind = ["ChannelA-DIMM0"]  # optional: only accept the part exposing this key
 `bind` keys: DIMM locator / bank locator (SMBIOS), USB root port such as `1-2`,
 PCI address such as `0000:01:00.0`, `nvme` / `sata` for drives, interface name
 for network cards, `internal`/`eDP`/`HDMI-A` for displays. Without `bind`, parts fill slots of their kind in order.
-`anatomy --dump` shows each part's bind keys.
+`insider --dump` shows each part's bind keys.
 
 A cell is about twice as tall as it is wide, so draw things about 2× wider than
 on a photo.

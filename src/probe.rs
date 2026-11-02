@@ -4,7 +4,7 @@
 //! `lspci` (device names), `udevadm`/`dmidecode` (per-DIMM SMBIOS data),
 //! `lsusb` (USB names when the device has no strings), `nvidia-smi` (NVIDIA GPUs).
 //!
-//! Set `ANATOMY_SYSROOT=/some/dir` to read `/sys` and `/proc` from a captured tree.
+//! Set `INSIDER_SYSROOT=/some/dir` to read `/sys` and `/proc` from a captured tree.
 
 use crate::model::*;
 use std::cmp::Ordering;
@@ -20,13 +20,13 @@ use std::time::Instant;
 fn sysroot() -> &'static str {
     static R: OnceLock<String> = OnceLock::new();
     R.get_or_init(|| {
-        std::env::var("ANATOMY_SYSROOT")
+        std::env::var("INSIDER_SYSROOT")
             .map(|s| s.trim_end_matches('/').to_string())
             .unwrap_or_default()
     })
 }
 
-/// System path, honoring ANATOMY_SYSROOT.
+/// System path, honoring INSIDER_SYSROOT.
 fn sp(p: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", sysroot(), p))
 }

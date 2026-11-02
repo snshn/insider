@@ -2012,7 +2012,7 @@ pub fn draw_frame(f: &mut Frame, app: &mut App) {
     };
     let hdr = Line::from(vec![
         Span::styled(
-            " ANATOMY ",
+            " INSIDER ",
             Style::new()
                 .fg(Color::Black)
                 .bg(Color::Rgb(110, 200, 170))

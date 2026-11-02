@@ -1,4 +1,4 @@
-//! anatomy — a realtime TUI hardware inspector that draws your mainboard.
+//! insider — a realtime TUI hardware inspector that draws your mainboard.
 
 mod board;
 mod model;
@@ -15,9 +15,9 @@ use std::thread;
 use std::time::Duration;
 
 const HELP: &str = "\
-anatomy — realtime TUI hardware inspector
+insider — realtime TUI hardware inspector
 
-USAGE: anatomy [OPTIONS]
+USAGE: insider [OPTIONS]
 
 OPTIONS:
   -b, --board <FILE>          use a layout file (for authoring layouts)
@@ -29,7 +29,7 @@ OPTIONS:
   -h, --help                  show this help
   -V, --version               show version
 
-Layouts are read from ~/.config/anatomy/boards/*.toml and ./boards/*.toml.
+Layouts are read from ~/.config/insider/boards/*.toml and ./boards/*.toml.
 Run with sudo for RAM timings (SPD) and CPU package power.
 ";
 
@@ -71,11 +71,11 @@ fn parse_args() -> Args {
                 std::process::exit(0)
             }
             "-V" | "--version" => {
-                println!("anatomy {}", env!("CARGO_PKG_VERSION"));
+                println!("insider {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0)
             }
             other => {
-                eprintln!("anatomy: unknown option {other:?}\n\n{HELP}");
+                eprintln!("insider: unknown option {other:?}\n\n{HELP}");
                 std::process::exit(2)
             }
         }
@@ -87,10 +87,10 @@ fn main() -> io::Result<()> {
     let args = parse_args();
     let (mut boards, load_errors) = board::load_all();
     for e in &load_errors {
-        eprintln!("anatomy: layout error: {e}");
+        eprintln!("insider: layout error: {e}");
     }
     if boards.is_empty() {
-        eprintln!("anatomy: no usable board layouts");
+        eprintln!("insider: no usable board layouts");
         std::process::exit(1);
     }
     if args.list {
@@ -111,7 +111,7 @@ fn main() -> io::Result<()> {
     let (idx, reason) = match board::choose(&mut boards, &first, args.board.as_deref()) {
         Ok(x) => x,
         Err(e) => {
-            eprintln!("anatomy: {e}");
+            eprintln!("insider: {e}");
             std::process::exit(1)
         }
     };

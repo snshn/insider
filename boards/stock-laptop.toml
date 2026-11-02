@@ -2,7 +2,7 @@
 #
 # Coordinates are in terminal cells at 1:1 scale (a cell is roughly twice as
 # tall as it is wide, so draw things about 2x wider than they'd be on a photo).
-# anatomy scales the whole drawing to fit the terminal.
+# insider scales the whole drawing to fit the terminal.
 #
 # Left: the lid (camera, mic, screen) and the base (keyboard, speakers,
 # touchpad, battery). Right: the mainboard, its fans above it.

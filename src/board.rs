@@ -181,15 +181,15 @@ pub fn parse(id: &str, source: &str, text: &str) -> Result<BoardDef, String> {
 pub fn board_dirs() -> Vec<PathBuf> {
     let mut v = Vec::new();
     if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
-        v.push(PathBuf::from(x).join("anatomy/boards"));
+        v.push(PathBuf::from(x).join("insider/boards"));
     }
     if let Ok(h) = std::env::var("HOME") {
-        v.push(PathBuf::from(h).join(".config/anatomy/boards"));
+        v.push(PathBuf::from(h).join(".config/insider/boards"));
     }
     if let Ok(u) = std::env::var("SUDO_USER") {
-        v.push(PathBuf::from(format!("/home/{u}/.config/anatomy/boards")));
+        v.push(PathBuf::from(format!("/home/{u}/.config/insider/boards")));
     }
-    v.push(PathBuf::from("/usr/share/anatomy/boards"));
+    v.push(PathBuf::from("/usr/share/insider/boards"));
     v.push(PathBuf::from("boards"));
     v.dedup();
     v
