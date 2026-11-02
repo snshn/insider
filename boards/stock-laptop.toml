@@ -1,0 +1,373 @@
+# Generic laptop — a stand-in until a real board layout exists.
+#
+# Coordinates are in terminal cells at 1:1 scale (a cell is roughly twice as
+# tall as it is wide, so draw things about 2x wider than they'd be on a photo).
+# anatomy scales the whole drawing to fit the terminal.
+#
+# Left: the lid (camera, mic, screen) and the base (keyboard, speakers,
+# touchpad, battery). Right: the mainboard, its fans above it.
+# Everything on the left is cabled to a connector on the board (`link`).
+
+name = "Generic laptop mainboard"
+form = "laptop"
+generic = true
+width = 160
+height = 50
+color = "#123524"
+pcb = { x = 68, y = 10, w = 92, h = 26 }
+
+# A real layout would add one or more [[match]] tables, e.g.
+# [[match]]
+# sys_vendor = "Razer"
+# product_name = "Blade 15"
+
+# ---------------------------------------------------------------- lid
+
+[[slot]]
+id = "camera"
+kind = "camera"
+x = 27
+y = 0
+w = 10
+h = 2
+link = "camc"
+label = "Camera"
+
+[[slot]]
+id = "mic"
+kind = "microphone"
+x = 39
+y = 0
+w = 4
+h = 2
+link = "camc"
+label = "Mic"
+
+[[slot]]
+id = "screen"
+kind = "display"
+x = 0
+y = 3
+w = 64
+h = 21
+soldered = true
+bind = ["internal"]
+link = "edp"
+label = "Screen"
+
+# ---------------------------------------------------------------- base
+
+[[slot]]
+id = "keyboard"
+kind = "keyboard"
+x = 3
+y = 26
+w = 58
+h = 9
+soldered = true
+link = "kbc"
+label = "Keyboard"
+
+[[slot]]
+id = "spk_l"
+kind = "speaker"
+x = 3
+y = 36
+w = 15
+h = 6
+link = "spkc"
+label = "Speaker L"
+
+[[slot]]
+id = "touchpad"
+kind = "touchpad"
+x = 20
+y = 36
+w = 24
+h = 6
+soldered = true
+link = "tpc"
+label = "Touchpad"
+
+[[slot]]
+id = "spk_r"
+kind = "speaker"
+x = 46
+y = 36
+w = 15
+h = 6
+link = "spkc"
+label = "Speaker R"
+
+[[slot]]
+id = "bat0"
+kind = "battery"
+x = 5
+y = 44
+w = 54
+h = 6
+link = "batc"
+label = "Battery"
+
+# ---------------------------------------------------------------- fans
+
+[[slot]]
+id = "fan0"
+kind = "fan"
+x = 81
+y = 0
+w = 16
+h = 8
+soldered = true
+link = "fanc1"
+label = "FAN 1"
+
+[[slot]]
+id = "fan1"
+kind = "fan"
+x = 107
+y = 0
+w = 16
+h = 8
+soldered = true
+link = "fanc2"
+label = "FAN 2"
+
+# ---------------------------------------------------------------- mainboard (PCB origin x = 68, y = 10)
+
+[[slot]]
+id = "edp"
+kind = "connector"
+x = 69
+y = 12
+w = 6
+h = 2
+soldered = true
+label = "eDP"
+
+[[slot]]
+id = "kbc"
+kind = "connector"
+x = 69
+y = 27
+w = 6
+h = 2
+soldered = true
+label = "KB"
+
+[[slot]]
+id = "tpc"
+kind = "connector"
+x = 69
+y = 30
+w = 6
+h = 2
+soldered = true
+label = "TP"
+
+[[slot]]
+id = "spkc"
+kind = "connector"
+x = 69
+y = 33
+w = 6
+h = 2
+soldered = true
+label = "SPK"
+
+[[slot]]
+id = "camc"
+kind = "connector"
+x = 77
+y = 11
+w = 6
+h = 2
+soldered = true
+label = "CAM"
+
+[[slot]]
+id = "fanc1"
+kind = "connector"
+x = 86
+y = 11
+w = 6
+h = 2
+soldered = true
+label = "FAN"
+
+[[slot]]
+id = "fanc2"
+kind = "connector"
+x = 112
+y = 11
+w = 6
+h = 2
+soldered = true
+label = "FAN"
+
+[[slot]]
+id = "batc"
+kind = "connector"
+x = 80
+y = 33
+w = 6
+h = 2
+soldered = true
+label = "BAT"
+
+[[slot]]
+id = "cpu0"
+kind = "cpu"
+x = 78
+y = 14
+w = 23
+h = 10
+soldered = true
+label = "CPU"
+
+[[slot]]
+id = "gpu0"
+kind = "gpu"
+x = 104
+y = 14
+w = 23
+h = 10
+soldered = true
+label = "GPU"
+
+[[slot]]
+id = "pch"
+kind = "chipset"
+x = 130
+y = 12
+w = 10
+h = 4
+soldered = true
+label = "PCH"
+
+[[slot]]
+id = "bios"
+kind = "bios"
+x = 130
+y = 18
+w = 10
+h = 3
+soldered = true
+label = "BIOS"
+
+[[slot]]
+id = "chips"
+kind = "pci"
+x = 143
+y = 12
+w = 12
+h = 9
+soldered = true
+catchall = true
+label = ""
+
+[[slot]]
+id = "ssd0"
+kind = "ssd"
+x = 78
+y = 25
+w = 21
+h = 3
+edge = "left"
+label = "M.2 SSD 1"
+
+[[slot]]
+id = "ssd1"
+kind = "ssd"
+x = 78
+y = 29
+w = 21
+h = 3
+edge = "left"
+label = "M.2 SSD 2"
+
+[[slot]]
+id = "dimm0"
+kind = "dimm"
+x = 101
+y = 25
+w = 23
+h = 5
+edge = "bottom"
+label = "SODIMM A"
+
+[[slot]]
+id = "dimm1"
+kind = "dimm"
+x = 101
+y = 30
+w = 23
+h = 5
+edge = "bottom"
+label = "SODIMM B"
+
+[[slot]]
+id = "wifi"
+kind = "wifi"
+x = 127
+y = 25
+w = 12
+h = 4
+edge = "left"
+label = "M.2 Wi-Fi"
+
+[[slot]]
+id = "lan"
+kind = "ethernet"
+x = 127
+y = 30
+w = 12
+h = 3
+soldered = true
+label = "LAN"
+
+[[slot]]
+id = "usbint"
+kind = "usb-internal"
+x = 142
+y = 25
+w = 10
+h = 3
+multi = true
+label = "int USB"
+
+[[slot]]
+id = "usb0"
+kind = "usb"
+x = 157
+y = 12
+w = 3
+h = 2
+label = "USB"
+
+[[slot]]
+id = "usb1"
+kind = "usb"
+x = 157
+y = 16
+w = 3
+h = 2
+label = "USB"
+
+[[slot]]
+id = "usb2"
+kind = "usb"
+x = 157
+y = 20
+w = 3
+h = 2
+label = "USB"
+
+[[slot]]
+id = "usb3"
+kind = "usb"
+x = 157
+y = 29
+w = 3
+h = 2
+label = "USB-C"
