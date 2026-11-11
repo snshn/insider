@@ -180,18 +180,47 @@ pub fn parse(id: &str, source: &str, text: &str) -> Result<BoardDef, String> {
 
 pub fn board_dirs() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
-        v.push(PathBuf::from(x).join("insider/boards"));
+    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+    if cfg!(windows) {
+        // %APPDATA%\insider\boards
+        if let Some(a) = env("APPDATA") {
+            v.push(PathBuf::from(a).join("insider").join("boards"));
+        }
     }
-    if let Ok(h) = std::env::var("HOME") {
-        v.push(PathBuf::from(h).join(".config/insider/boards"));
+    if let Some(x) = env("XDG_CONFIG_HOME") {
+        v.push(PathBuf::from(x).join("insider").join("boards"));
     }
-    if let Ok(u) = std::env::var("SUDO_USER") {
-        v.push(PathBuf::from(format!("/home/{u}/.config/insider/boards")));
+    if let Some(h) = env("HOME").or_else(|| env("USERPROFILE")) {
+        v.push(
+            PathBuf::from(&h)
+                .join(".config")
+                .join("insider")
+                .join("boards"),
+        );
+        if cfg!(target_os = "macos") {
+            v.push(PathBuf::from(&h).join("Library/Application Support/insider/boards"));
+        }
     }
-    v.push(PathBuf::from("/usr/share/insider/boards"));
+    if let Some(u) = env("SUDO_USER") {
+        let home = if cfg!(target_os = "macos") {
+            "/Users"
+        } else {
+            "/home"
+        };
+        v.push(PathBuf::from(format!("{home}/{u}/.config/insider/boards")));
+        if cfg!(target_os = "macos") {
+            v.push(PathBuf::from(format!(
+                "{home}/{u}/Library/Application Support/insider/boards"
+            )));
+        }
+    }
+    if cfg!(unix) {
+        v.push(PathBuf::from("/usr/local/share/insider/boards"));
+        v.push(PathBuf::from("/usr/share/insider/boards"));
+    }
     v.push(PathBuf::from("boards"));
-    v.dedup();
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|p| seen.insert(p.clone()));
     v
 }
 

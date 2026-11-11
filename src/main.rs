@@ -1,8 +1,12 @@
 //! insider — a realtime TUI hardware inspector that draws your mainboard.
 
 mod board;
+mod json;
 mod model;
+mod platform;
 mod probe;
+mod probe_macos;
+mod probe_windows;
 mod ui;
 
 use ratatui::crossterm::event::{
@@ -28,10 +32,19 @@ OPTIONS:
       --no-nvidia-smi         never run nvidia-smi
   -h, --help                  show this help
   -V, --version               show version
-
-Layouts are read from ~/.config/insider/boards/*.toml and ./boards/*.toml.
-Run with sudo for RAM timings (SPD) and CPU package power.
 ";
+
+fn help() -> String {
+    let dirs: Vec<String> = board::board_dirs()
+        .iter()
+        .map(|d| format!("  {}", d.display()))
+        .collect();
+    format!(
+        "{HELP}\nLayouts (*.toml) are read from:\n{}\n\n{}\n",
+        dirs.join("\n"),
+        platform::elevate_hint()
+    )
+}
 
 struct Args {
     board: Option<String>,
@@ -67,7 +80,7 @@ fn parse_args() -> Args {
             }
             "--no-nvidia-smi" => a.nvidia = false,
             "-h" | "--help" => {
-                print!("{HELP}");
+                print!("{}", help());
                 std::process::exit(0)
             }
             "-V" | "--version" => {
@@ -75,7 +88,7 @@ fn parse_args() -> Args {
                 std::process::exit(0)
             }
             other => {
-                eprintln!("insider: unknown option {other:?}\n\n{HELP}");
+                eprintln!("insider: unknown option {other:?}\n\n{}", help());
                 std::process::exit(2)
             }
         }
@@ -104,7 +117,7 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    let mut prober = probe::Prober::new(probe::Options {
+    let mut prober = platform::Prober::new(platform::Options {
         nvidia_smi: args.nvidia,
     });
     let first = prober.gather();
@@ -117,6 +130,7 @@ fn main() -> io::Result<()> {
     };
 
     if args.dump {
+        prober.settle(); // wait for slow, background-collected details
         thread::sleep(Duration::from_millis(700)); // second sample, for rates
         let snap = prober.gather();
         dump(&snap, &boards[idx], &reason);

@@ -17,7 +17,7 @@ use std::time::Instant;
 
 // ---------------------------------------------------------------- helpers
 
-fn sysroot() -> &'static str {
+pub(crate) fn sysroot() -> &'static str {
     static R: OnceLock<String> = OnceLock::new();
     R.get_or_init(|| {
         std::env::var("INSIDER_SYSROOT")
@@ -108,10 +108,51 @@ fn link_base(p: impl AsRef<Path>) -> Option<String> {
     fs::read_link(p).ok().map(|l| fname(&l))
 }
 
-fn run(cmd: &str, args: &[&str]) -> Option<String> {
+/// File name a command's output is recorded under: the tool plus its
+/// arguments, e.g. `ioreg_-rn_AppleSmartBattery`.
+pub(crate) fn cmd_key(cmd: &str, args: &[&str]) -> String {
+    let mut k = String::from(cmd);
+    for a in args {
+        k.push('_');
+        k.push_str(a);
+    }
+    let k: String = k
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-,=".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    k.chars().take(120).collect()
+}
+
+/// `INSIDER_CAPTURE=/dir`: also write every tool's output to
+/// `/dir/cmd/<key>`, so a machine can be replayed elsewhere with
+/// `INSIDER_SYSROOT=/dir` (and `INSIDER_PLATFORM=...`).
+pub(crate) fn capture(key: &str, out: &str) {
+    if let Ok(dir) = std::env::var("INSIDER_CAPTURE") {
+        let d = PathBuf::from(dir).join("cmd");
+        let _ = fs::create_dir_all(&d);
+        let _ = fs::write(d.join(key), out);
+    }
+}
+
+/// Recorded output of a command when replaying a captured tree: the
+/// argument-specific file if there is one, else `cmd/<tool>`.
+pub(crate) fn replay(cmd: &str, args: &[&str]) -> Option<String> {
+    let dir = format!("{}/cmd", sysroot());
+    fs::read_to_string(format!("{dir}/{}", cmd_key(cmd, args)))
+        .or_else(|_| fs::read_to_string(format!("{dir}/{cmd}")))
+        .ok()
+}
+
+pub(crate) fn run(cmd: &str, args: &[&str]) -> Option<String> {
     if !sysroot().is_empty() {
         // Replaying a captured tree: use recorded output, never the live system.
-        return fs::read_to_string(format!("{}/cmd/{cmd}", sysroot())).ok();
+        return replay(cmd, args);
     }
     let out = Command::new(cmd)
         .args(args)
@@ -122,11 +163,13 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    let s = String::from_utf8_lossy(&out.stdout).into_owned();
+    capture(&cmd_key(cmd, args), &s);
+    Some(s)
 }
 
 /// Drop firmware placeholder strings.
-fn clean(s: Option<String>) -> Option<String> {
+pub(crate) fn clean(s: Option<String>) -> Option<String> {
     let s = s?;
     let t = s.trim();
     let l = t.to_ascii_lowercase();
@@ -151,7 +194,7 @@ fn clean(s: Option<String>) -> Option<String> {
     }
 }
 
-fn join(v: &[Option<String>]) -> Option<String> {
+pub(crate) fn join(v: &[Option<String>]) -> Option<String> {
     let mut out: Vec<&str> = Vec::new();
     for s in v.iter().flatten() {
         // avoid "Razer Razer Blade"
@@ -315,7 +358,7 @@ fn parse_lspci(out: &str) -> HashMap<String, PciName> {
     m
 }
 
-fn short_vendor(v: &str) -> String {
+pub(crate) fn short_vendor(v: &str) -> String {
     if let (Some(a), Some(b)) = (v.find('['), v.rfind(']')) {
         if a < b {
             let inner = &v[a + 1..b];
@@ -342,7 +385,7 @@ fn short_vendor(v: &str) -> String {
     s.trim().to_string()
 }
 
-fn nice_device(d: &str) -> String {
+pub(crate) fn nice_device(d: &str) -> String {
     if let (Some(a), Some(b)) = (d.rfind('['), d.rfind(']')) {
         if a < b && b - a > 3 {
             return d[a + 1..b].to_string();
@@ -389,7 +432,7 @@ struct MemDev {
     width: Option<String>,
 }
 
-fn leading_num(s: &str) -> Option<f64> {
+pub(crate) fn leading_num(s: &str) -> Option<f64> {
     let n: String = s
         .trim()
         .chars()
@@ -398,7 +441,7 @@ fn leading_num(s: &str) -> Option<f64> {
     n.parse().ok()
 }
 
-fn parse_size(s: &str) -> Option<u64> {
+pub(crate) fn parse_size(s: &str) -> Option<u64> {
     let n = leading_num(s)?;
     let mul: u64 = if s.contains("TB") {
         1 << 40
@@ -1128,31 +1171,7 @@ impl Prober {
             } else if d.vendor == 0x10de {
                 let key = slot_suffix(&d.slot);
                 if let Some(nv) = self.nvidia.get(&key) {
-                    let f = |k: &str| clean(nv.get(k).cloned());
-                    if let Some(c) = f("clocks.gr") {
-                        p.metric(format!("{c} MHz"));
-                        p.prop("Core clock", format!("{c} MHz"));
-                    }
-                    if let Some(u) = f("utilization.gpu") {
-                        p.metric(format!("{u}%"));
-                        p.prop("Utilization", format!("{u}%"));
-                    }
-                    if let (Some(u), Some(t)) = (
-                        f("memory.used").and_then(|v| v.parse::<f64>().ok()),
-                        f("memory.total").and_then(|v| v.parse::<f64>().ok()),
-                    ) {
-                        p.metric(format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0));
-                        p.prop("VRAM", format!("{u:.0} / {t:.0} MiB"));
-                    }
-                    if let Some(w) = f("power.draw").and_then(|v| v.parse::<f64>().ok()) {
-                        p.metric(format!("{w:.0} W"));
-                        p.prop("Power draw", format!("{w:.1} W"));
-                    }
-                    p.opt("Memory clock", f("clocks.mem").map(|c| format!("{c} MHz")));
-                    p.opt("P-state", f("pstate"));
-                    p.opt("Fan", f("fan.speed").map(|c| format!("{c}%")));
-                    p.opt("NVIDIA driver", f("driver_version"));
-                    p.temp = f("temperature.gpu").and_then(|v| v.parse().ok());
+                    nvidia_props(&mut p, nv);
                 } else if !self.opts.nvidia_smi {
                     p.prop("Note", "nvidia-smi polling disabled (--no-nvidia-smi)");
                 }
@@ -1909,18 +1928,18 @@ impl Prober {
 
 // ---------------------------------------------------------------- displays
 
-struct Edid {
-    vendor: String,
-    product: u16,
-    year: Option<u32>,
-    name: Option<String>,
-    text: Vec<String>,
-    diag_in: Option<f64>,
-    native: Option<(u32, u32, f64)>,
-    version: String,
+pub(crate) struct Edid {
+    pub vendor: String,
+    pub product: u16,
+    pub year: Option<u32>,
+    pub name: Option<String>,
+    pub text: Vec<String>,
+    pub diag_in: Option<f64>,
+    pub native: Option<(u32, u32, f64)>,
+    pub version: String,
 }
 
-fn parse_edid(b: &[u8]) -> Option<Edid> {
+pub(crate) fn parse_edid(b: &[u8]) -> Option<Edid> {
     if b.len() < 128 || b[..8] != [0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0] {
         return None;
     }
@@ -1974,7 +1993,7 @@ fn parse_edid(b: &[u8]) -> Option<Edid> {
     Some(e)
 }
 
-fn panel_vendor(id: &str) -> &str {
+pub(crate) fn panel_vendor(id: &str) -> &str {
     match id {
         "AUO" => "AU Optronics",
         "BOE" => "BOE",
@@ -1997,6 +2016,38 @@ fn panel_vendor(id: &str) -> &str {
         "VSC" => "ViewSonic",
         _ => id,
     }
+}
+
+pub(crate) fn edid_title(e: &Edid) -> String {
+    let model = e.name.clone().or_else(|| e.text.last().cloned());
+    format!(
+        "{}{}",
+        panel_vendor(&e.vendor),
+        model.map(|m| format!(" {m}")).unwrap_or_default()
+    )
+}
+
+pub(crate) fn edid_props(p: &mut Part, e: &Edid) {
+    if let Some((w, h, hz)) = e.native {
+        p.metric(format!("{w}x{h}"));
+        p.metric(format!("{hz:.0} Hz"));
+        p.prop("Native mode", format!("{w}x{h} @ {hz:.2} Hz"));
+    }
+    if let Some(d) = e.diag_in {
+        p.metric(format!("{d:.1}\""));
+        p.prop("Size", format!("{d:.1}\""));
+    }
+    p.prop(
+        "Manufacturer",
+        format!("{} ({})", panel_vendor(&e.vendor), e.vendor),
+    );
+    p.prop("Product code", format!("{:04x}", e.product));
+    p.opt("Model", e.name.clone());
+    if !e.text.is_empty() {
+        p.prop("Panel strings", e.text.join(", "));
+    }
+    p.opt("Manufactured", e.year);
+    p.prop("EDID version", &e.version);
 }
 
 fn displays() -> Vec<Part> {
@@ -2022,23 +2073,13 @@ fn displays() -> Vec<Part> {
             .to_string();
         let internal = ["eDP", "LVDS", "DSI"].contains(&ctype.as_str());
         let edid = fs::read(c.join("edid")).ok().and_then(|b| parse_edid(&b));
-        let title = edid
-            .as_ref()
-            .map(|e| {
-                let model = e.name.clone().or_else(|| e.text.last().cloned());
-                format!(
-                    "{}{}",
-                    panel_vendor(&e.vendor),
-                    model.map(|m| format!(" {m}")).unwrap_or_default()
-                )
-            })
-            .unwrap_or_else(|| {
-                if internal {
-                    "Built-in display".into()
-                } else {
-                    format!("{conn} display")
-                }
-            });
+        let title = edid.as_ref().map(edid_title).unwrap_or_else(|| {
+            if internal {
+                "Built-in display".into()
+            } else {
+                format!("{conn} display")
+            }
+        });
         let mut p = Part::new(format!("display:{n}"), Kind::Display, title);
         p.tag = if internal {
             "Screen".into()
@@ -2062,26 +2103,7 @@ fn displays() -> Vec<Part> {
         p.opt("Enabled", rd(c.join("enabled")));
         let mode = rd(c.join("modes")).and_then(|m| m.lines().next().map(|s| s.to_string()));
         if let Some(e) = &edid {
-            if let Some((w, h, hz)) = e.native {
-                p.metric(format!("{w}x{h}"));
-                p.metric(format!("{hz:.0} Hz"));
-                p.prop("Native mode", format!("{w}x{h} @ {hz:.2} Hz"));
-            }
-            if let Some(d) = e.diag_in {
-                p.metric(format!("{d:.1}\""));
-                p.prop("Size", format!("{d:.1}\""));
-            }
-            p.prop(
-                "Manufacturer",
-                format!("{} ({})", panel_vendor(&e.vendor), e.vendor),
-            );
-            p.prop("Product code", format!("{:04x}", e.product));
-            p.opt("Model", e.name.clone());
-            if !e.text.is_empty() {
-                p.prop("Panel strings", e.text.join(", "));
-            }
-            p.opt("Manufactured", e.year);
-            p.prop("EDID version", &e.version);
+            edid_props(&mut p, e);
         } else if let Some(m) = &mode {
             p.metric(m.clone());
         }
@@ -2186,7 +2208,7 @@ fn usb_dev_of(sysfs: &str) -> Option<String> {
         .map(String::from)
 }
 
-fn touchpad_vendor(name: &str) -> Option<&'static str> {
+pub(crate) fn touchpad_vendor(name: &str) -> Option<&'static str> {
     let n = name.to_uppercase();
     [
         ("06CB", "Synaptics"),
@@ -2419,7 +2441,36 @@ fn audio() -> Vec<Part> {
     out
 }
 
-fn query_nvidia() -> HashMap<String, HashMap<String, String>> {
+/// Live values from one `nvidia-smi` row (see `query_nvidia`).
+pub(crate) fn nvidia_props(p: &mut Part, nv: &HashMap<String, String>) {
+    let f = |k: &str| clean(nv.get(k).cloned());
+    if let Some(c) = f("clocks.gr") {
+        p.metric(format!("{c} MHz"));
+        p.prop("Core clock", format!("{c} MHz"));
+    }
+    if let Some(u) = f("utilization.gpu") {
+        p.metric(format!("{u}%"));
+        p.prop("Utilization", format!("{u}%"));
+    }
+    if let (Some(u), Some(t)) = (
+        f("memory.used").and_then(|v| v.parse::<f64>().ok()),
+        f("memory.total").and_then(|v| v.parse::<f64>().ok()),
+    ) {
+        p.metric(format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0));
+        p.prop("VRAM", format!("{u:.0} / {t:.0} MiB"));
+    }
+    if let Some(w) = f("power.draw").and_then(|v| v.parse::<f64>().ok()) {
+        p.metric(format!("{w:.0} W"));
+        p.prop("Power draw", format!("{w:.1} W"));
+    }
+    p.opt("Memory clock", f("clocks.mem").map(|c| format!("{c} MHz")));
+    p.opt("P-state", f("pstate"));
+    p.opt("Fan", f("fan.speed").map(|c| format!("{c}%")));
+    p.opt("NVIDIA driver", f("driver_version"));
+    p.temp = f("temperature.gpu").and_then(|v| v.parse().ok());
+}
+
+pub(crate) fn query_nvidia() -> HashMap<String, HashMap<String, String>> {
     let mut m = HashMap::new();
     let q = format!("--query-gpu={}", NV_FIELDS.join(","));
     if let Some(o) = run("nvidia-smi", &[&q, "--format=csv,noheader,nounits"]) {
@@ -2439,7 +2490,7 @@ fn query_nvidia() -> HashMap<String, HashMap<String, String>> {
     m
 }
 
-fn slot_suffix(s: &str) -> String {
+pub(crate) fn slot_suffix(s: &str) -> String {
     let s = s.to_ascii_lowercase();
     s[s.len().saturating_sub(7)..].to_string()
 }
@@ -2534,7 +2585,7 @@ fn fans(hw: &[Hwmon]) -> Vec<Part> {
     out
 }
 
-fn clean_cpu_name(model: &str) -> String {
+pub(crate) fn clean_cpu_name(model: &str) -> String {
     let mut s = model
         .replace("(R)", "")
         .replace("(TM)", "")
@@ -2549,7 +2600,7 @@ fn clean_cpu_name(model: &str) -> String {
         .join(" ")
 }
 
-fn chassis_name(c: u32) -> &'static str {
+pub(crate) fn chassis_name(c: u32) -> &'static str {
     match c {
         3 => "Desktop",
         4 => "Low-profile desktop",
@@ -2573,7 +2624,7 @@ fn chassis_name(c: u32) -> &'static str {
     }
 }
 
-fn usb_class(c: &str) -> &'static str {
+pub(crate) fn usb_class(c: &str) -> &'static str {
     match c.to_ascii_lowercase().as_str() {
         "01" => "Audio",
         "02" => "Comms",
@@ -2599,7 +2650,7 @@ fn usb_class(c: &str) -> &'static str {
     }
 }
 
-fn usb_speed(s: &str) -> (String, String) {
+pub(crate) fn usb_speed(s: &str) -> (String, String) {
     match s {
         "1.5" => ("1.5M".into(), "USB 1.x Low Speed (1.5 Mb/s)".into()),
         "12" => ("12M".into(), "USB 1.x Full Speed (12 Mb/s)".into()),
