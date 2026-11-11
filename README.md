@@ -2,7 +2,7 @@
 
 ![Insider TUI snapshot](assets/snapshots/gui.png)
 
-A realtime TUI hardware inspector that draws your mainboard. Ratatui, Linux, 0BSD.
+A realtime TUI hardware inspector that draws your mainboard. Ratatui, Linux, macOS, Windows, 0BSD.
 
 Run it and you get a 2D picture of the machine. The default **semi-exploded**
 view shows the mainboard with what has to be plugged in for it to work (CPU,
@@ -24,10 +24,19 @@ voltage/cycles/health, USB speed and drivers, and so on.
 
     cargo build --release
     ./target/release/insider
-    sudo ./target/release/insider      # adds RAM SPD timings and CPU package power
 
-Optional tools it uses when present: `lspci` (pciutils), `lsusb` (usbutils),
-`udevadm` (systemd), `dmidecode`, `nvidia-smi`.
+No extra crates and no platform SDKs are needed: on every OS insider reads
+what the system already offers (files, built-in tools) and parses it.
+
+| | extras with elevated rights | reads from |
+| --- | --- | --- |
+| Linux | `sudo insider`: RAM SPD timings, CPU package power | sysfs/procfs; `lspci` (pciutils), `lsusb` (usbutils), `udevadm` (systemd), `dmidecode`, `nvidia-smi` when present |
+| macOS | `sudo insider`: CPU/GPU temperatures and fans (Intel), per-core clocks and load, CPU/GPU/package power, thermal pressure | `system_profiler`, `sysctl`, `ioreg`, `vm_stat`, `netstat`, `ifconfig`, `hidutil`, `networksetup`, `osascript`; `powermetrics` as root |
+| Windows | Administrator terminal: ACPI thermal zones, disk temperature/wear, Secure Boot state | Windows PowerShell 5.1 (CIM/WMI, PnP, registry), `netsh`; `nvidia-smi` when present |
+
+On Windows run it in Windows Terminal (`.\target\release\insider.exe`). On
+macOS any terminal works; one with 24-bit colour (iTerm2, WezTerm, Ghostty,
+kitty, or Terminal on macOS 26+) shows the board colours as intended.
 
 | key | action |
 | --- | --- |
@@ -45,15 +54,28 @@ needs a proper layout.
 
 ### Notes
 
-* **RAM timings** come from the SPD EEPROM: `sudo modprobe ee1004` (DDR4) or
+* **RAM timings** (Linux) come from the SPD EEPROM: `sudo modprobe ee1004` (DDR4) or
   `spd5118` (DDR5), then run with sudo. Without it you still get size, type,
   speed, part number and slot from SMBIOS (via udev, no root needed).
-* **NVIDIA Optimus**: when the dGPU is runtime-suspended (D3) insider leaves it
+* **NVIDIA Optimus** (Linux): when the dGPU is runtime-suspended (D3) insider leaves it
   alone and shows "asleep". When it is awake it polls `nvidia-smi` every ~5 s;
   use `--no-nvidia-smi` if you'd rather never touch it.
+* **macOS**: everything slow (`system_profiler`) is refreshed on a background
+  thread every 30 s; Wi-Fi/Bluetooth details arrive a few seconds after start.
+  Apple silicon has no command-line source for per-sensor temperatures, so
+  insider shows thermal pressure (as root) instead. RAM on Apple silicon is
+  one "unified memory" part, bound as `unified`.
+* **Windows**: the inventory comes from one PowerShell run at start (and every
+  30 s); live values from one PowerShell process kept running, so refreshes
+  don't pay PowerShell's start-up time. Windows has no built-in interface for
+  CPU core temperatures; the ACPI thermal zone is shown.
 * `INSIDER_SYSROOT=/path` reads `/sys` and `/proc` from a captured tree, and
-  `$INSIDER_SYSROOT/cmd/<tool>` as that tool's recorded output. Handy for
-  developing layouts for machines you don't have.
+  `$INSIDER_SYSROOT/cmd/<tool>_<args>` (or `cmd/<tool>`) as that tool's
+  recorded output. Handy for developing layouts for machines you don't have.
+* `INSIDER_CAPTURE=/path insider --dump` records every tool's output into
+  `/path/cmd/`. Copy that folder anywhere and replay it with
+  `INSIDER_SYSROOT=/path INSIDER_PLATFORM=macos insider` (or `windows`,
+  `linux`) — e.g. capture on a Mac, develop its layout on Linux.
 
 ## Board layouts
 
@@ -61,8 +83,16 @@ Layouts are TOML files. insider picks one itself: a layout whose `[[match]]`
 fits the machine's DMI data wins; otherwise it falls back to a generic stand-in
 chosen from what it found (SODIMM/CAMM memory, a battery or a laptop chassis
 type mean a laptop board, otherwise ATX). Built-ins: `stock-laptop` and
-`stock-atx`. Your own go in `~/.config/insider/boards/` (or `./boards/`); a
-file with the same id (file stem) as a built-in replaces it.
+`stock-atx`. Your own go in `~/.config/insider/boards/` (macOS also
+`~/Library/Application Support/insider/boards/`, Windows
+`%APPDATA%\insider\boards\`) or `./boards/`; a file with the same id (file
+stem) as a built-in replaces it. `insider --help` lists the search path.
+
+The DMI fields mean the same on every OS: on Windows they come from SMBIOS
+via WMI, so one layout matches a PC under Linux and Windows alike. Macs report
+`sys_vendor = "Apple Inc."`, `product_name` = the model name ("MacBook Pro")
+and `board_name` = the model identifier ("MacBookPro16,1"), so a Mac layout
+matches with `board_name = "MacBookPro16,1"`.
 
 ```toml
 name = "Razer Blade 15 (Mid 2019)"
@@ -99,6 +129,9 @@ bind = ["ChannelA-DIMM0"]  # optional: only accept the part exposing this key
 `bind` keys: DIMM locator / bank locator (SMBIOS), USB root port such as `1-2`,
 PCI address such as `0000:01:00.0`, `nvme` / `sata` for drives, interface name
 for network cards, `internal`/`eDP`/`HDMI-A` for displays. Without `bind`, parts fill slots of their kind in order.
+USB ports are `bus-port` from the location ID on macOS and `hub-port` from the
+device location on Windows, so they differ between OSes; PCI addresses,
+DIMM locators and display types do not.
 `insider --dump` shows each part's bind keys.
 
 A cell is about twice as tall as it is wide, so draw things about 2× wider than

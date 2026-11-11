@@ -2114,7 +2114,7 @@ pub fn draw_frame(f: &mut Frame, app: &mut App) {
             Line::raw("always point at their connector. Exploded view also pulls"),
             Line::raw("RAM, drives and cards out of their slots."),
             Line::raw(""),
-            Line::raw("More detail (RAM timings, CPU power): run with sudo."),
+            Line::raw(crate::platform::elevate_hint()),
         ];
         f.render_widget(Clear, r);
         f.render_widget(
