@@ -29,10 +29,13 @@ pub enum Kind {
     Connector,
     /// Slot-only kind: a PCIe expansion slot (accepts GPUs, add-in cards, ...).
     Pcie,
+    /// Slot-only kind: an Ethernet jack on the board's edge, showing the link
+    /// and activity of the LAN controller it is wired to (`link`).
+    Rj45,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 22] = [
+    pub const ALL: [Kind; 23] = [
         Kind::Board,
         Kind::Cpu,
         Kind::Gpu,
@@ -55,6 +58,7 @@ impl Kind {
         Kind::Microphone,
         Kind::Connector,
         Kind::Pcie,
+        Kind::Rj45,
     ];
 
     pub fn name(self) -> &'static str {
@@ -81,6 +85,7 @@ impl Kind {
             Kind::Microphone => "microphone",
             Kind::Connector => "connector",
             Kind::Pcie => "pcie",
+            Kind::Rj45 => "rj45",
         }
     }
 
@@ -118,6 +123,11 @@ pub struct Part {
     pub form: Option<String>,
     /// Per physical core (CPUs).
     pub cores: Vec<Core>,
+    /// Live I/O in bytes/s, for activity LEDs: (read, write) for drives,
+    /// (received, sent) for network cards.
+    pub io: Option<(f64, f64)>,
+    /// Network link: (up, speed in Mb/s or 0 when unknown), for port LEDs.
+    pub link: Option<(bool, u32)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -144,6 +154,8 @@ impl Part {
             rpm: None,
             form: None,
             cores: Vec::new(),
+            io: None,
+            link: None,
         }
     }
 

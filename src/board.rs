@@ -51,6 +51,7 @@ pub struct SlotDef {
     #[serde(default)]
     pub edge: Option<String>,
     /// Id of a connector slot this one is cabled to (screen -> eDP); drawn when exploded.
+    /// For an `rj45` jack: the slot of the LAN controller whose link it shows.
     #[serde(default)]
     pub link: Option<String>,
     /// Soldered area that takes every part no other slot wanted (drawn as chips).
@@ -118,7 +119,7 @@ impl BoardDef {
             s.acc = if s.accepts.is_empty() {
                 match k {
                     Kind::Pcie => vec![Kind::Gpu, Kind::Pci, Kind::Ssd, Kind::Wifi, Kind::Ethernet],
-                    Kind::Connector => vec![],
+                    Kind::Connector | Kind::Rj45 => vec![],
                     k => vec![k],
                 }
             } else {

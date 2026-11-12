@@ -105,8 +105,8 @@ main()
 
 `Kind` covers both part kinds and slot kinds:
 `board cpu gpu dimm ssd wifi ethernet chipset bios battery usb usb-internal fan
-pci display camera keyboard touchpad speaker microphone connector pcie`.
-`connector` and `pcie` are slot-only kinds.
+pci display camera keyboard touchpad speaker microphone connector pcie rj45`.
+`connector`, `pcie` and `rj45` are slot-only kinds.
 
 `Part`, one detected (or expected-but-empty) thing:
 
@@ -123,6 +123,8 @@ pci display camera keyboard touchpad speaker microphone connector pcie`.
 | `rpm` | fans |
 | `form` | `SODIMM` / `DIMM` / `CAMM2`… (drives the RAM shape and the laptop guess) |
 | `cores` | `Vec<Core { id, temp, ghz, load }>`, one per physical core (CPU) |
+| `io` | bytes/s for activity LEDs: (read, write) for drives incl. USB mass storage, (received, sent) for network cards |
+| `link` | network link (up, Mb/s or 0 when unknown), for the RJ45 jack's LEDs |
 
 `Snapshot { parts, dmi, notes }`. `notes` are human hints, such as "run with
 sudo for SPD timings", shown in the board's detail panel.
@@ -181,12 +183,13 @@ sys_vendor = "Razer"; product_name = "Blade 15"   # also board_vendor, board_nam
 
 [[slot]]
 id, kind, x, y, w, h, label
-accepts = ["gpu", "pci"]    # default: [kind]; pcie → gpu,pci,ssd,wifi,ethernet; connector → none
+accepts = ["gpu", "pci"]    # default: [kind]; pcie → gpu,pci,ssd,wifi,ethernet; connector, rj45 → none
 soldered = true             # never leaves the board
 multi = true                # takes every remaining part of its kinds
 bind = ["ChannelA-DIMM0"]   # only parts exposing one of these keys
 edge = "left|right|top|bottom"   # side with the contacts (dimm, ssd, wifi)
-link = "edp"                # peripheral cabled to that slot (normally a `connector`)
+link = "edp"                # peripheral cabled to that slot (normally a `connector`);
+                            # on an `rj45` jack: the LAN controller slot it shows
 catchall = true             # soldered area for parts no other slot took
 ```
 
@@ -294,7 +297,14 @@ off the contact strip on a given edge.
 | touchpad | rounded pad with the vendor name |
 | speaker | grille of dots, volume (red when muted) |
 | microphone | row of holes (red when muted) |
-| exploded USB device | body + metal plug facing the board (white plug for internal devices) |
+| exploded USB device | body + metal plug facing the board (white plug for internal devices); mass storage gets an activity LED at the far end |
+| RJ45 jack | metal shell; the opening holds a clear plug with gold contacts when the link is up; latch notch below; link LED (green at ≥ 1 Gb/s, amber below) and activity LED (amber, flickers with traffic) on the top corners. Selecting it selects the LAN controller it is wired to (`link`) |
+| drive activity LED | red, like a case's HDD light: on every NVMe/SATA/IDE drive (at the far end of an M.2 stick, on the bottom edge of a drive box) and USB mass storage |
+
+Activity LEDs (`blink`): probes only see one I/O rate per refresh, so an LED
+flickers pseudo-randomly about 15 times a second, lit with a probability that
+grows with the rate on a log scale (a few KB/s: the odd blip; hundreds of
+MB/s: nearly solid). Each LED has its own pattern (seeded by the part id).
 
 Palette constants: `LG` (light gray lines and borders), `HI` (white,
 selected), `GOLD` (contacts only), `GREEN_PCB`, `BLACK_PCB`, `METAL`, `SHIELD`,

@@ -44,6 +44,17 @@ w = 6
 h = 2
 label = "USB"
 
+# rear I/O: the Ethernet jack, wired to the LAN controller below
+[[slot]]
+id = "rj45"
+kind = "rj45"
+x = 1
+y = 14
+w = 6
+h = 3
+link = "lan"
+label = "LAN"
+
 [[slot]]
 id = "lan"
 kind = "ethernet"
