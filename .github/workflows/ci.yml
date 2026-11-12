@@ -1,0 +1,47 @@
+# CI GitHub Actions workflow for insider
+
+name: CI
+
+on:
+  pull_request:
+    branches: [ master ]
+    paths-ignore:
+    - 'assets/**'
+    - 'dist/**'
+    - 'docs/**'
+    - 'LICENSE'
+    - 'README.md'
+
+jobs:
+  build_and_test:
+    name: Build and test
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - run: git config --global core.autocrlf false
+
+    - name: "Checkout repository"
+      uses: actions/checkout@v4
+
+    - name: Build
+      run: cargo build --all --locked --verbose
+
+    - name: Run tests
+      run: cargo test --all --locked --verbose --no-fail-fast
+
+    # Probe the runner for real: exercises the Linux, macOS and Windows probers
+    # on actual systems (the output is in the log)
+    - name: Dump detected hardware
+      timeout-minutes: 3
+      run: cargo run --locked -- --dump
+
+    - name: Check code formatting
+      run: |
+        rustup component add rustfmt
+        cargo fmt --all -- --check

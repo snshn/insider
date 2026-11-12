@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=insider
+GenericName=Hardware inspector
+Comment=Realtime TUI hardware inspector that draws your mainboard
+Exec=insider
+Icon=insider
+Terminal=true
+Categories=System;Monitor;
+Keywords=hardware;mainboard;motherboard;sensors;temperature;

@@ -1,0 +1,31 @@
+name: GNU/Linux
+
+on:
+  push:
+    branches: [ master ]
+    paths-ignore:
+    - 'assets/**'
+    - 'dist/**'
+    - 'docs/**'
+    - 'LICENSE'
+    - 'README.md'
+
+jobs:
+  build:
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+        rust:
+          - stable
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - run: git config --global core.autocrlf false
+
+    - uses: actions/checkout@v4
+
+    - name: Build
+      run: cargo build --all --locked --verbose
