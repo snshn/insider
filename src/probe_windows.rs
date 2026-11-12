@@ -18,7 +18,7 @@ use crate::model::*;
 use crate::platform::{Options, Refresh};
 use crate::probe::{
     capture, chassis_name, clean, clean_cpu_name, edid_props, edid_title, join, nvidia_props,
-    panel_vendor, parse_edid, query_nvidia, slot_suffix, sysroot, touchpad_vendor,
+    panel_vendor, parse_edid, query_nvidia, slot_suffix, sysroot, throughput, touchpad_vendor,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -263,6 +263,22 @@ fn n(j: &Json, k: &str) -> Option<f64> {
     j.get(k).num()
 }
 
+/// Get-NetAdapter's LinkSpeed ("1 Gbps", "866.7 Mbps", "0 bps") in Mb/s.
+pub(crate) fn link_mbps(s: &str) -> u32 {
+    let n = crate::probe::leading_num(s).unwrap_or(0.0);
+    let l = s.to_ascii_lowercase();
+    let mbps = if l.contains("gbps") {
+        n * 1000.0
+    } else if l.contains("mbps") {
+        n
+    } else if l.contains("kbps") {
+        n / 1000.0
+    } else {
+        n / 1e6
+    };
+    mbps.round() as u32
+}
+
 /// "PCI bus 1, device 0, function 0" -> "0000:01:00.0"
 pub(crate) fn pci_address(loc: &str) -> Option<String> {
     let mut nums = loc
@@ -467,7 +483,8 @@ impl Prober {
         parts.push(self.cpu(&inv, &live, &tz, &pci_addr, &mut claimed_pci));
         parts.extend(self.gpus(&inv, &live, &pci_addr, &prop, &mut claimed_pci));
         parts.extend(dimms(&inv, &live));
-        let mut disks = self.disks(&inv, &live);
+        let dio = self.disk_io(&live);
+        let mut disks = self.disks(&inv, &dio);
         nvme_controllers(&inv, &mut disks, &pci_addr, &prop, &mut claimed_pci);
         parts.extend(disks);
         parts.extend(self.nets(&inv, &live, &pci_addr, &mut claimed_pci));
@@ -477,7 +494,7 @@ impl Prober {
         parts.push(bios(&inv, &dmi));
         parts.extend(batteries(&inv, &live));
         parts.extend(inputs(&inv, &live));
-        parts.extend(usb(&inv, &prop));
+        parts.extend(usb(&inv, &prop, &dio));
         parts.extend(audio(&inv));
         parts.extend(displays(&inv, &live));
         parts.extend(other_pci(&inv, &pci_addr, &prop, &claimed_pci));
@@ -742,7 +759,34 @@ impl Prober {
 
     // ------------------------------------------------------------ storage
 
-    fn disks(&mut self, inv: &Json, live: &Json) -> Vec<Part> {
+    /// Read/write bytes per second per physical disk number ("0", "1"...),
+    /// from the raw (cumulative) disk performance counters.
+    fn disk_io(&mut self, live: &Json) -> HashMap<String, (f64, f64)> {
+        let mut out = HashMap::new();
+        for c in live.get("disk").items() {
+            // "0 C:", "1", "_Total"
+            let Some(dev) = c
+                .get("Name")
+                .str()
+                .and_then(|nm| nm.split_whitespace().next().map(String::from))
+                .filter(|d| d.chars().all(|ch| ch.is_ascii_digit()))
+            else {
+                continue;
+            };
+            if let (Some(r), Some(w)) = (n(c, "DiskReadBytesPersec"), n(c, "DiskWriteBytesPersec"))
+            {
+                if let (Some(r), Some(w)) = (
+                    self.rate(&format!("{dev}:r"), r),
+                    self.rate(&format!("{dev}:w"), w),
+                ) {
+                    out.insert(dev, (r, w));
+                }
+            }
+        }
+        out
+    }
+
+    fn disks(&mut self, inv: &Json, dio: &HashMap<String, (f64, f64)>) -> Vec<Part> {
         let mut out = Vec::new();
         for d in inv.get("disk").items() {
             let bus = n(d, "BusType").unwrap_or(0.0) as u32;
@@ -815,25 +859,8 @@ impl Prober {
                 p.opt("Wear", n(r, "Wear").map(|w| format!("{w:.0}%")));
                 p.opt("Power-on hours", n(r, "PowerOnHours").map(|h| h as u64));
             }
-            if let Some(c) = live.get("disk").items().iter().find(|c| {
-                c.get("Name").str().map_or(false, |nm| {
-                    nm.split_whitespace().next() == Some(dev.as_str())
-                })
-            }) {
-                if let (Some(r), Some(w)) =
-                    (n(c, "DiskReadBytesPersec"), n(c, "DiskWriteBytesPersec"))
-                {
-                    if let (Some(r), Some(w)) = (
-                        self.rate(&format!("{dev}:r"), r),
-                        self.rate(&format!("{dev}:w"), w),
-                    ) {
-                        p.metric(format!("R {} W {}", fmt_rate(r), fmt_rate(w)));
-                        p.prop(
-                            "Throughput",
-                            format!("read {}  write {}", fmt_rate(r), fmt_rate(w)),
-                        );
-                    }
-                }
+            if let Some((r, w)) = dio.get(&dev) {
+                throughput(&mut p, *r, *w);
             }
             out.push(p);
         }
@@ -895,6 +922,10 @@ impl Prober {
                 .find(|x| s(x, "Name").as_deref() == Some(name.as_str()))
                 .cloned()
                 .unwrap_or_else(|| a.clone());
+            p.link = Some((
+                s(&st, "Status").as_deref() == Some("Up"),
+                s(&st, "LinkSpeed").map_or(0, |l| link_mbps(&l)),
+            ));
             if let Some(state) = s(&st, "Status") {
                 p.metric(state.to_lowercase());
                 p.prop("State", state);
@@ -932,6 +963,7 @@ impl Prober {
                         self.rate(&format!("{name}:rx"), rx),
                         self.rate(&format!("{name}:tx"), tx),
                     ) {
+                        p.io = Some((r, t));
                         p.metric(format!("↓{} ↑{}", fmt_rate(r), fmt_rate(t)));
                         p.prop(
                             "Traffic",
@@ -1543,7 +1575,27 @@ fn inputs(inv: &Json, live: &Json) -> Vec<Part> {
     out
 }
 
-fn usb(inv: &Json, prop: &dyn Fn(&str, &str) -> Option<Json>) -> Vec<Part> {
+/// USB disks (MSFT_PhysicalDisk with BusType 7): (disk number, serial, size).
+fn usb_disks(inv: &Json) -> Vec<(String, String, Option<u64>)> {
+    inv.get("disk")
+        .items()
+        .iter()
+        .filter(|d| n(d, "BusType") == Some(7.0))
+        .filter_map(|d| {
+            Some((
+                d.get("DeviceId").str()?,
+                d.get("SerialNumber").str().unwrap_or_default(),
+                n(d, "Size").map(|v| v as u64),
+            ))
+        })
+        .collect()
+}
+
+fn usb(
+    inv: &Json,
+    prop: &dyn Fn(&str, &str) -> Option<Json>,
+    dio: &HashMap<String, (f64, f64)>,
+) -> Vec<Part> {
     let mut devs: BTreeMap<String, UsbDev> = BTreeMap::new();
     for d in inv.get("pnp").items() {
         let id = d.get("InstanceId").str().unwrap_or_default();
@@ -1593,6 +1645,9 @@ fn usb(inv: &Json, prop: &dyn Fn(&str, &str) -> Option<Json>) -> Vec<Part> {
             || l.contains("generic usb")
     };
     let mut out = Vec::new();
+    // USB serial number: the last part of the device's instance id, unless
+    // Windows made one up (those contain '&')
+    let mut serials: Vec<Option<String>> = Vec::new();
     for (key, d) in devs {
         let all = d.names.join(" ").to_lowercase();
         if all.contains("hub") && d.classes.iter().all(|c| c == "USB") {
@@ -1655,7 +1710,44 @@ fn usb(inv: &Json, prop: &dyn Fn(&str, &str) -> Option<Json>) -> Vec<Part> {
                 None => "unknown",
             },
         );
+        serials.push(
+            d.ids
+                .iter()
+                .find(|id| !id.to_uppercase().contains("&MI_"))
+                .and_then(|id| id.rsplit('\\').next())
+                .filter(|s| !s.contains('&'))
+                .map(String::from),
+        );
         out.push(p);
+    }
+    // which USB device each USB disk is: same serial, or the only candidate
+    let disks = usb_disks(inv);
+    let storage: Vec<usize> = (0..out.len())
+        .filter(|&i| out[i].tag == "Storage")
+        .collect();
+    for (num, serial, size) in &disks {
+        let serial = serial.trim();
+        let by_serial = storage.iter().copied().find(|&i| {
+            !serial.is_empty()
+                && serials[i]
+                    .as_deref()
+                    .map_or(false, |s| s.eq_ignore_ascii_case(serial))
+        });
+        let only = (disks.len() == 1 && storage.len() == 1).then(|| storage[0]);
+        let Some(i) = by_serial.or(only) else {
+            continue;
+        };
+        let p = &mut out[i];
+        if let Some(sz) = size {
+            p.metric(fmt_dec(*sz));
+        }
+        p.prop(
+            &format!("Disk \\\\.\\PhysicalDrive{num}"),
+            size.map(fmt_dec).unwrap_or_default(),
+        );
+        if let Some((r, w)) = dio.get(num) {
+            throughput(p, *r, *w);
+        }
     }
     out
 }
@@ -1888,6 +1980,10 @@ mod tests {
             Some("0000:00:1f.3")
         );
         assert_eq!(usb_port("Port_#0003.Hub_#0001").as_deref(), Some("1-3"));
+        assert_eq!(link_mbps("1 Gbps"), 1000);
+        assert_eq!(link_mbps("2.5 Gbps"), 2500);
+        assert_eq!(link_mbps("866.7 Mbps"), 867);
+        assert_eq!(link_mbps("0 bps"), 0);
         assert_eq!(
             vid_pid("USB\\VID_046D&PID_C52B&MI_00\\7&1"),
             Some(("046d".into(), "c52b".into()))

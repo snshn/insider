@@ -1339,6 +1339,23 @@ impl Prober {
 
     // ------------------------------------------------------------ storage
 
+    /// Read/write bytes per second of a block device, from its `stat` file
+    /// (fields 3 and 7 count 512-byte sectors).
+    fn block_io(&mut self, b: &Path) -> Option<(f64, f64)> {
+        let bn = fname(b);
+        let st = rd(b.join("stat"))?;
+        let f: Vec<f64> = st
+            .split_whitespace()
+            .filter_map(|x| x.parse().ok())
+            .collect();
+        if f.len() <= 6 {
+            return None;
+        }
+        let r = self.rate(&format!("{bn}:r"), f[2] * 512.0);
+        let w = self.rate(&format!("{bn}:w"), f[6] * 512.0);
+        r.zip(w)
+    }
+
     fn disks(&mut self, hw: &[Hwmon], claimed: &mut HashSet<String>) -> Vec<Part> {
         let mut out = Vec::new();
         let blocks = ls(sp("/sys/block"));
@@ -1378,21 +1395,10 @@ impl Prober {
                     continue;
                 }
                 size += rdn::<u64>(b.join("size")).unwrap_or(0) * 512;
-                if let Some(st) = rd(b.join("stat")) {
-                    let f: Vec<f64> = st
-                        .split_whitespace()
-                        .filter_map(|x| x.parse().ok())
-                        .collect();
-                    if f.len() > 6 {
-                        if let (Some(r), Some(w)) = (
-                            self.rate(&format!("{bn}:r"), f[2] * 512.0),
-                            self.rate(&format!("{bn}:w"), f[6] * 512.0),
-                        ) {
-                            rs += r;
-                            ws += w;
-                            have_rate = true;
-                        }
-                    }
+                if let Some((r, w)) = self.block_io(b) {
+                    rs += r;
+                    ws += w;
+                    have_rate = true;
                 }
                 p.prop("Namespace", &bn);
             }
@@ -1402,11 +1408,7 @@ impl Prober {
                 p.prop("Capacity", fmt_dec(size));
             }
             if have_rate {
-                p.metric(format!("R {} W {}", fmt_rate(rs), fmt_rate(ws)));
-                p.prop(
-                    "Throughput",
-                    format!("read {}  write {}", fmt_rate(rs), fmt_rate(ws)),
-                );
+                throughput(&mut p, rs, ws);
             }
             if let Some(h) = hw.iter().find(|h| {
                 h.name == "nvme"
@@ -1429,7 +1431,8 @@ impl Prober {
 
         for b in &blocks {
             let bn = fname(b);
-            if !bn.starts_with("sd") {
+            // sd*: SATA, SAS, and IDE/PATA through libata; hd*: the old IDE driver
+            if !bn.starts_with("sd") && !bn.starts_with("hd") {
                 continue;
             }
             let cp = canon(b)
@@ -1465,6 +1468,9 @@ impl Prober {
                 },
             );
             p.opt("Firmware", rd(b.join("device/rev")));
+            if let Some((r, w)) = self.block_io(b) {
+                throughput(&mut p, r, w);
+            }
             let bdev = canon(b.join("device"));
             if let Some(h) = hw
                 .iter()
@@ -1515,6 +1521,8 @@ impl Prober {
             p.opt("MAC", rd(n.join("address")));
             let state = rd(n.join("operstate"));
             p.opt("State", state.clone());
+            let speed = rdn::<i64>(n.join("speed")).filter(|s| *s > 0);
+            p.link = Some((state.as_deref() == Some("up"), speed.unwrap_or(0) as u32));
             p.opt("MTU", rd(n.join("mtu")));
             if let Some(s) = state {
                 p.metric(s);
@@ -1545,6 +1553,7 @@ impl Prober {
                     self.rate(&format!("{ifn}:rx"), rx),
                     self.rate(&format!("{ifn}:tx"), tx),
                 ) {
+                    p.io = Some((r, t));
                     p.metric(format!("↓{} ↑{}", fmt_rate(r), fmt_rate(t)));
                     p.prop(
                         "Traffic",
@@ -1890,6 +1899,7 @@ impl Prober {
                 ),
             );
             if let Some(dc) = canon(&d) {
+                let mut io: Option<(f64, f64)> = None;
                 for (bc, b) in &blocks {
                     if bc.starts_with(&dc) {
                         let bn = fname(b);
@@ -1898,7 +1908,14 @@ impl Prober {
                             p.metric(fmt_dec(size));
                         }
                         p.prop(&format!("Disk /dev/{bn}"), fmt_dec(size));
+                        if let Some((r, w)) = self.block_io(b) {
+                            let (r0, w0) = io.unwrap_or((0.0, 0.0));
+                            io = Some((r0 + r, w0 + w));
+                        }
                     }
+                }
+                if let Some((r, w)) = io {
+                    throughput(&mut p, r, w);
                 }
             }
             out.push(p);
@@ -2016,6 +2033,16 @@ pub(crate) fn panel_vendor(id: &str) -> &str {
         "VSC" => "ViewSonic",
         _ => id,
     }
+}
+
+/// Drive throughput: shown, and kept for the activity LED.
+pub(crate) fn throughput(p: &mut Part, r: f64, w: f64) {
+    p.io = Some((r, w));
+    p.metric(format!("R {} W {}", fmt_rate(r), fmt_rate(w)));
+    p.prop(
+        "Throughput",
+        format!("read {}  write {}", fmt_rate(r), fmt_rate(w)),
+    );
 }
 
 pub(crate) fn edid_title(e: &Edid) -> String {

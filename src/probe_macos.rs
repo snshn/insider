@@ -21,7 +21,7 @@ use crate::model::*;
 use crate::platform::{Options, Refresh};
 use crate::probe::{
     chassis_name, clean, clean_cpu_name, edid_props, edid_title, join, leading_num, panel_vendor,
-    parse_edid, run, usb_speed,
+    parse_edid, run, throughput, usb_speed,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -41,7 +41,6 @@ pub(crate) fn parse_sysctl(s: &str) -> HashMap<String, String> {
 /// One registry object from `ioreg` text output.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct IoObj {
-    pub name: String,
     pub class: String,
     pub props: Vec<(String, String)>,
 }
@@ -63,14 +62,13 @@ pub(crate) fn parse_ioreg(s: &str) -> Vec<IoObj> {
     for l in s.lines() {
         let t = l.trim_start_matches(|c: char| c == ' ' || c == '|');
         if let Some(rest) = t.strip_prefix("+-o ") {
-            let (name, tail) = rest.split_once("  <").unwrap_or((rest, ""));
+            let tail = rest.split_once("  <").map_or("", |x| x.1);
             let class = tail
                 .strip_prefix("class ")
                 .and_then(|c| c.split([',', '>']).next())
                 .unwrap_or("")
                 .to_string();
             out.push(IoObj {
-                name: name.trim().to_string(),
                 class,
                 props: Vec::new(),
             });
@@ -667,7 +665,8 @@ impl Prober {
         parts.push(self.cpu(&inv, &pm, &accels));
         parts.extend(self.gpus(&inv, &pm, &accels));
         parts.extend(dimms(&inv, mem_use));
-        parts.extend(self.disks(&inv));
+        let dio = self.disk_io();
+        parts.extend(self.disks(&inv, &dio));
         parts.extend(self.nets(&inv));
         if let Some(t2) = t2(&inv) {
             parts.push(t2);
@@ -685,7 +684,7 @@ impl Prober {
         }));
         let (inputs, claimed_usb) = inputs(&inv);
         parts.extend(inputs);
-        let usb = usb(&inv, &claimed_usb);
+        let usb = usb(&inv, &claimed_usb, &dio);
         let has_cam = usb.iter().any(|p| p.kind == Kind::Camera);
         parts.extend(usb);
         if !has_cam {
@@ -1041,26 +1040,37 @@ impl Prober {
 
     // ------------------------------------------------------------ storage
 
-    fn disks(&mut self, inv: &Inventory) -> Vec<Part> {
-        // ioreg: each IOBlockStorageDriver (with Statistics) is followed by its IOMedia (BSD Name)
-        let mut stats: HashMap<String, (f64, f64)> = HashMap::new();
-        if let Some(o) = run(
+    /// Read/write bytes per second per whole disk ("disk0"), internal and
+    /// external alike. ioreg lists each IOBlockStorageDriver (with Statistics)
+    /// followed by its IOMedia (BSD Name).
+    fn disk_io(&mut self) -> HashMap<String, (f64, f64)> {
+        let mut out = HashMap::new();
+        let Some(o) = run(
             "ioreg",
             &["-r", "-l", "-d", "2", "-w0", "-c", "IOBlockStorageDriver"],
-        ) {
-            let objs = parse_ioreg(&o);
-            let mut pending: Option<(f64, f64)> = None;
-            for x in &objs {
-                if let Some(s) = x.get("Statistics") {
-                    pending = io_inline(s, "Bytes (Read)")
-                        .and_then(|v| io_num(&v))
-                        .zip(io_inline(s, "Bytes (Write)").and_then(|v| io_num(&v)));
-                } else if let (Some(b), Some(st)) = (x.get("BSD Name"), pending) {
-                    stats.insert(b.trim_matches('"').to_string(), st);
-                    pending = None;
+        ) else {
+            return out;
+        };
+        let mut pending: Option<(f64, f64)> = None;
+        for x in parse_ioreg(&o) {
+            if let Some(s) = x.get("Statistics") {
+                pending = io_inline(s, "Bytes (Read)")
+                    .and_then(|v| io_num(&v))
+                    .zip(io_inline(s, "Bytes (Write)").and_then(|v| io_num(&v)));
+            } else if let (Some(b), Some((r, w))) = (x.get("BSD Name"), pending.take()) {
+                let b = b.trim_matches('"').to_string();
+                if let (Some(r), Some(w)) = (
+                    self.rate(&format!("{b}:r"), r),
+                    self.rate(&format!("{b}:w"), w),
+                ) {
+                    out.insert(b, (r, w));
                 }
             }
         }
+        out
+    }
+
+    fn disks(&mut self, inv: &Inventory, dio: &HashMap<String, (f64, f64)>) -> Vec<Part> {
         let mut drives: Vec<(&'static str, &Json, Option<String>)> = Vec::new();
         for (bus, t) in [("nvme", "SPNVMeDataType"), ("sata", "SPSerialATADataType")] {
             for ctl in inv.sp(t) {
@@ -1129,18 +1139,8 @@ impl Prober {
                 sps(d, &["spnvme_trim_support", "spsata_trim_support"]),
             );
             p.opt("S.M.A.R.T.", sps(d, &["smart_status"]).map(|s| sp_word(&s)));
-            if let Some((r, w)) = bsd.as_ref().and_then(|b| stats.get(b)).copied() {
-                let b = bsd.clone().unwrap_or_default();
-                if let (Some(r), Some(w)) = (
-                    self.rate(&format!("{b}:r"), r),
-                    self.rate(&format!("{b}:w"), w),
-                ) {
-                    p.metric(format!("R {} W {}", fmt_rate(r), fmt_rate(w)));
-                    p.prop(
-                        "Throughput",
-                        format!("read {}  write {}", fmt_rate(r), fmt_rate(w)),
-                    );
-                }
+            if let Some((r, w)) = bsd.as_ref().and_then(|b| dio.get(b)).copied() {
+                throughput(&mut p, r, w);
             }
             out.push(p);
         }
@@ -1254,7 +1254,13 @@ impl Prober {
                     if let Some(s) = l.strip_prefix("status: ") {
                         p.metric(s.to_string());
                         p.prop("State", s);
+                        let speed = p.link.map_or(0, |l| l.1);
+                        p.link = Some((s == "active", speed));
                     } else if let Some(m) = l.strip_prefix("media: ") {
+                        // "autoselect (1000baseT <full-duplex>)"
+                        let speed = media_mbps(m);
+                        let up = p.link.map_or(false, |l| l.0);
+                        p.link = Some((up, speed));
                         p.prop("Media", m);
                     } else if let Some(m) = l.strip_prefix("ether ") {
                         p.prop("MAC", m.trim());
@@ -1268,6 +1274,7 @@ impl Prober {
                     self.rate(&format!("{ifn}:rx"), rx),
                     self.rate(&format!("{ifn}:tx"), tx),
                 ) {
+                    p.io = Some((r, t));
                     p.metric(format!("↓{} ↑{}", fmt_rate(r), fmt_rate(t)));
                     p.prop(
                         "Traffic",
@@ -1320,6 +1327,24 @@ impl Prober {
 }
 
 // ---------------------------------------------------------------- free functions
+
+/// Link speed in Mb/s from ifconfig's media line ("autoselect (1000baseT
+/// <full-duplex>)", "10Gbase-T"); 0 when it doesn't say.
+pub(crate) fn media_mbps(m: &str) -> u32 {
+    let Some(i) = m.find("base") else { return 0 };
+    let head = &m[..i];
+    let st = head
+        .rfind(|c: char| !(c.is_ascii_alphanumeric()))
+        .map_or(0, |j| j + 1);
+    let word = &head[st..];
+    let num: String = word.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let n = num.parse::<u32>().unwrap_or(0);
+    if word.ends_with('G') {
+        n * 1000
+    } else {
+        n
+    }
+}
 
 /// Cache sizes: KiB below 1 MiB.
 pub(crate) fn fmt_cache(b: u64) -> String {
@@ -1831,7 +1856,7 @@ fn inputs(inv: &Inventory) -> (Vec<Part>, HashSet<String>) {
     (out, claimed)
 }
 
-fn usb(inv: &Inventory, claimed: &HashSet<String>) -> Vec<Part> {
+fn usb(inv: &Inventory, claimed: &HashSet<String>, dio: &HashMap<String, (f64, f64)>) -> Vec<Part> {
     let mut devs: Vec<&Json> = Vec::new();
     for t in ["SPUSBDataType", "SPUSBHostDataType"] {
         for root in inv.sp(t) {
@@ -1969,14 +1994,20 @@ fn usb(inv: &Inventory, claimed: &HashSet<String>) -> Vec<Part> {
                 "external port"
             },
         );
+        let mut io: Option<(f64, f64)> = None;
         for m in d.get("Media").items() {
+            let bsd = sps(m, &["bsd_name"]).unwrap_or_default();
             if let Some(s) = m.get("size_in_bytes").num() {
                 p.metric(fmt_dec(s as u64));
-                p.prop(
-                    &format!("Disk /dev/{}", sps(m, &["bsd_name"]).unwrap_or_default()),
-                    fmt_dec(s as u64),
-                );
+                p.prop(&format!("Disk /dev/{bsd}"), fmt_dec(s as u64));
             }
+            if let Some((r, w)) = dio.get(&bsd) {
+                let (r0, w0) = io.unwrap_or((0.0, 0.0));
+                io = Some((r0 + r, w0 + w));
+            }
+        }
+        if let Some((r, w)) = io {
+            throughput(&mut p, r, w);
         }
         out.push(p);
     }
@@ -2292,6 +2323,10 @@ mod tests {
             Some(("20-1".to_string(), "20-1.2".to_string()))
         );
         assert_eq!(edid_vendor(0x610), "APP");
+        assert_eq!(media_mbps("autoselect (1000baseT <full-duplex>)"), 1000);
+        assert_eq!(media_mbps("autoselect (100baseTX <full-duplex>)"), 100);
+        assert_eq!(media_mbps("10Gbase-T <full-duplex>"), 10000);
+        assert_eq!(media_mbps("autoselect"), 0);
         assert_eq!(hex_ascii("0x4D3437314131"), "M471A1");
         let (page, m) = parse_vm_stat(
             "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:      1000.\nPages active:    2000.\n",

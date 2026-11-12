@@ -25,6 +25,13 @@ const BLACK_PCB: Color = Color::Rgb(26, 26, 30);
 const METAL: Color = Color::Rgb(160, 162, 168);
 const SHIELD: Color = Color::Rgb(178, 180, 186);
 const CHIP: Color = Color::Rgb(18, 18, 21);
+/// Drive activity LED, like the HDD light on old cases.
+const LED_DISK: Color = Color::Rgb(255, 48, 28);
+/// RJ45 link LED: gigabit and faster / slower links.
+const LED_LINK: Color = Color::Rgb(40, 225, 80);
+const LED_LINK_SLOW: Color = Color::Rgb(255, 160, 20);
+/// RJ45 activity LED.
+const LED_ACT: Color = Color::Rgb(255, 205, 40);
 
 // ---------------------------------------------------------------- app state
 
@@ -864,6 +871,20 @@ fn draw_m2(cv: &mut Cv, r: Rect, p: &Part, ctx: &Ctx, wifi: bool) {
             }
             text_block(cv, inner, &lines, Color::White);
         }
+        // activity LED at the far end, clear of the mounting screw
+        let (lx, ly) = if far.width == 1 && far.height >= 2 {
+            let y = if mid == far.y {
+                far.y + far.height - 1
+            } else {
+                far.y
+            };
+            (far.x, y)
+        } else if far.width >= 2 {
+            (far.x, far.y)
+        } else {
+            (inner.x + inner.width.saturating_sub(1), inner.y)
+        };
+        disk_led(cv, lx as i32, ly as i32, p, ctx.t);
     }
     if ctx.sel {
         cv.corners(m);
@@ -902,6 +923,94 @@ fn draw_camera(cv: &mut Cv, r: Rect, p: Option<&Part>, ctx: &Ctx) {
     }
     if ctx.sel {
         cv.corners(m);
+    }
+}
+
+// ---------------------------------------------------------------- LEDs
+
+/// A pseudo-random number in 0..1 for (seed, n): the same inputs give the
+/// same value, so every LED flickers in its own pattern.
+fn noise(seed: &str, n: u64) -> f64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in seed.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    // splitmix64
+    let mut z = h ^ n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    (z >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Whether an activity LED is lit at time `t`, given `bps` bytes/s of I/O.
+/// Real LEDs light up with every burst of reads and writes; insider only
+/// learns a rate once per refresh, so the LED flickers at random with a duty
+/// cycle that grows with the rate (log scale: a few KB/s is the odd blip,
+/// hundreds of MB/s is nearly solid).
+fn blink(seed: &str, t: f64, bps: f64) -> bool {
+    if bps.is_nan() || bps < 1.0 {
+        return false;
+    }
+    let duty = ((bps.log10() - 2.0) / 7.0).clamp(0.12, 0.9);
+    noise(seed, (t * 15.0) as u64) < duty
+}
+
+/// One LED: a lit cell, or a dark one when off.
+fn led(cv: &mut Cv, x: i32, y: i32, on: Option<Color>) {
+    let c = match on {
+        Some(c) => c,
+        None => Color::Rgb(48, 44, 40),
+    };
+    cv.put(x, y, ' ', Style::new().bg(c));
+}
+
+/// The drive activity LED of part `p` at (x, y).
+fn disk_led(cv: &mut Cv, x: i32, y: i32, p: &Part, t: f64) {
+    let bps = p.io.map_or(0.0, |(r, w)| r + w);
+    led(cv, x, y, blink(&p.id, t, bps).then_some(LED_DISK));
+}
+
+/// An RJ45 jack: a metal shell with the opening (holding the cable's plug
+/// when there is a link) and two LEDs, like on a real one: link (left; green
+/// at gigabit and up, amber below) and activity (right; flickers with traffic).
+fn draw_rj45(cv: &mut Cv, r: Rect, lan: Option<&Part>, ctx: &Ctx) {
+    cv.bg(r, METAL);
+    let (x0, y0) = (r.x as i32, r.y as i32);
+    let x1 = x0 + r.width as i32 - 1;
+    let (up, mbps) = lan.and_then(|p| p.link).unwrap_or((false, 0));
+    if r.width >= 4 && r.height >= 3 {
+        let dark = Color::Rgb(30, 30, 34);
+        let open = Rect::new(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
+        if up {
+            // clear plastic plug with its gold contacts
+            let plug = Color::Rgb(196, 204, 212);
+            cv.bg(open, plug);
+            for x in open.x..open.x + open.width {
+                cv.put(x as i32, open.y as i32, '╷', Style::new().fg(GOLD).bg(plug));
+            }
+        } else {
+            cv.bg(open, dark);
+        }
+        // the latch notch below the opening
+        let nw = (open.width / 2).max(1);
+        let latch = Rect::new(open.x + (open.width - nw) / 2, r.y + r.height - 1, nw, 1);
+        cv.bg(latch, if up { Color::Rgb(150, 156, 164) } else { dark });
+    }
+    if ctx.sel {
+        cv.restyle(r, Style::new().bg(HI));
+    }
+    if r.width >= 2 {
+        let link = up.then_some(if mbps == 0 || mbps >= 1000 {
+            LED_LINK
+        } else {
+            LED_LINK_SLOW
+        });
+        let traffic = lan.and_then(|p| p.io).map_or(0.0, |(rx, tx)| rx + tx);
+        let seed = lan.map_or("rj45", |p| p.id.as_str());
+        let act = (up && blink(seed, ctx.t, traffic)).then_some(LED_ACT);
+        led(cv, x0, y0, link);
+        led(cv, x1, y0, act);
     }
 }
 
@@ -1004,6 +1113,15 @@ fn draw_usb_device(cv: &mut Cv, r: Rect, p: &Part, ctx: &Ctx) {
         cv.bg(plug, Color::Rgb(235, 235, 235));
     }
     text_block(cv, body, &[p.tag.clone()], Color::White);
+    if (p.io.is_some() || p.tag == "Storage") && body.width >= 3 {
+        // activity LED at the far end from the plug
+        let x = if ctx.align <= 0 {
+            body.x + body.width - 1
+        } else {
+            body.x
+        };
+        disk_led(cv, x as i32, body.y as i32, p, ctx.t);
+    }
     if ctx.sel {
         cv.corners(m);
     }
@@ -1312,6 +1430,15 @@ fn draw_chip(cv: &mut Cv, r: Rect, kind: Kind, p: Option<&Part>, ctx: &Ctx) {
     if ctx.sel && !framed {
         cv.restyle(r, Style::new().add_modifier(Modifier::REVERSED));
     }
+    if let (Kind::Ssd, Some(p)) = (kind, p) {
+        // a drive's activity LED: on the bottom edge, or the last cell when tiny
+        let (x, y) = if framed {
+            (r.x + r.width - 3, r.y + r.height - 1)
+        } else {
+            (r.x + r.width - 1, r.y)
+        };
+        disk_led(cv, x as i32, y as i32, p, ctx.t);
+    }
 }
 
 fn empty_slot(cv: &mut Cv, r: Rect, label: &str, sel: bool) {
@@ -1340,6 +1467,7 @@ fn draw(cv: &mut Cv, r: Rect, slot: Option<&SlotDef>, part: Option<&Part>, ctx: 
             Some(Kind::Usb) => return draw_port(cv, r, part, ctx, false),
             Some(Kind::UsbInternal) => return draw_port(cv, r, part, ctx, true),
             Some(Kind::Connector) => return draw_connector(cv, r, ctx),
+            Some(Kind::Rj45) => return draw_rj45(cv, r, None, ctx),
             Some(k @ (Kind::Dimm | Kind::Ssd | Kind::Wifi)) => {
                 return draw_module_slot(cv, r, k, part, ctx)
             }
@@ -1458,6 +1586,7 @@ fn draw_empty_slot(cv: &mut Cv, r: Rect, s: &SlotDef, ctx: &Ctx) {
         Kind::Usb => draw_port(cv, r, None, ctx, false),
         Kind::UsbInternal => draw_port(cv, r, None, ctx, true),
         Kind::Connector => draw_connector(cv, r, ctx),
+        Kind::Rj45 => draw_rj45(cv, r, None, ctx),
         k @ (Kind::Dimm | Kind::Ssd | Kind::Wifi) => draw_module_slot(cv, r, k, None, ctx),
         _ => empty_slot(cv, r, ctx.label, ctx.sel),
     }
@@ -1635,6 +1764,20 @@ fn board_bg(cv: &mut Cv, app: &App, xf: &Xf, hits: &mut Vec<(Rect, String)>) {
         );
     }
     hits.push((pcb, "board".into()));
+}
+
+/// The LAN controller an RJ45 jack is wired to: the Ethernet part in its
+/// `link` slot; without a `link`, the first Ethernet controller found.
+fn jack_part<'a>(app: &'a App, s: &SlotDef) -> Option<&'a Part> {
+    let parts = &app.snap.parts;
+    let eth = |p: &&Part| p.present && p.kind == Kind::Ethernet;
+    match &s.link {
+        Some(l) => {
+            let ti = app.board().slots.iter().position(|t| &t.id == l)?;
+            app.asg.slots[ti].iter().map(|&i| &parts[i]).find(eth)
+        }
+        None => parts.iter().find(eth),
+    }
 }
 
 fn slot_key(s: &SlotDef) -> String {
@@ -1859,6 +2002,24 @@ fn scene(cv: &mut Cv, area: Rect, app: &App, hits: &mut Vec<(Rect, String)>) {
             .collect();
         if s.catchall {
             draw_chip_group(cv, r, &present, app, hits);
+            continue;
+        }
+        if s.kind() == Kind::Rj45 {
+            // selecting the jack selects the LAN controller behind it
+            let lan = jack_part(app, s);
+            let key = lan.map_or_else(|| slot_key(s), |p| p.id.clone());
+            let label = s.label();
+            let ctx = Ctx {
+                mode: Mode::Board,
+                sel: app.is_sel(&key),
+                label: &label,
+                edge: Edge::Left,
+                align: 0,
+                t,
+                extra: None,
+            };
+            draw_rj45(cv, r, lan, &ctx);
+            hits.push((r, key));
             continue;
         }
         let key = match present.len() {

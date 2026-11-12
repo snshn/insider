@@ -123,6 +123,7 @@ id = "dimm0"
 kind = "dimm"              # cpu gpu dimm ssd wifi ethernet chipset bios battery
                            # usb usb-internal fan display camera keyboard
                            # touchpad speaker microphone connector pci pcie
+                           # rj45
 x = 42
 y = 12
 w = 31
@@ -131,7 +132,9 @@ label = "SODIMM A"
 edge = "bottom"            # side with the gold contacts (dimm, ssd, wifi)
 bind = ["ChannelA-DIMM0"]  # optional: only accept the part exposing this key
 # link = "edp"             # a peripheral cabled to a connector slot: stays where
-                           # it is drawn, with an arrow to that connector
+                           # it is drawn, with an arrow to that connector.
+                           # On an rj45 jack: the LAN controller slot whose
+                           # link and traffic its LEDs show
 # catchall = true          # soldered area for parts no other slot took
 # soldered = true          # stays on the board in exploded view
 # multi = true             # takes all remaining parts of its kind
