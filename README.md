@@ -1,3 +1,7 @@
+[![insider build status on GNU/Linux](https://github.com/snshn/insider/workflows/GNU%2FLinux/badge.svg)](https://github.com/snshn/insider/actions?query=workflow%3AGNU%2FLinux)
+[![insider build status on macOS](https://github.com/snshn/insider/workflows/macOS/badge.svg)](https://github.com/snshn/insider/actions?query=workflow%3AmacOS)
+[![insider build status on Windows](https://github.com/snshn/insider/workflows/Windows/badge.svg)](https://github.com/snshn/insider/actions?query=workflow%3AWindows)
+
 # insider
 
 ![Insider TUI snapshot](assets/snapshots/gui.png)
@@ -19,6 +23,14 @@ board.
 Click any part, or move with Tab/arrows and press Enter, to see everything known
 about it: CAS latency and timings for RAM, PCIe link for GPUs/NVMe, battery
 voltage/cycles/health, USB speed and drivers, and so on.
+
+## Download
+
+Every [release](https://github.com/snshn/insider/releases) has ready-made
+executables: `insider-linux-{x86_64,aarch64,armhf}`, `Insider-{x86_64,aarch64}.AppImage`,
+`insider-macos-{aarch64,x86_64}` and `insider-windows-x86_64.exe`.
+The macOS ones are not signed: after downloading, run
+`chmod +x insider-macos-* && xattr -d com.apple.quarantine insider-macos-*`.
 
 ## Build & run
 

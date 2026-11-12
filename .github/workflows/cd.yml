@@ -1,0 +1,146 @@
+# CD GitHub Actions workflow for insider
+
+name: CD
+
+on:
+  release:
+    types:
+    - created
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+
+  linux:
+    strategy:
+      matrix:
+        include:
+        - arch: x86_64
+          runner: ubuntu-22.04
+        - arch: aarch64
+          runner: ubuntu-22.04-arm
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+    - name: Checkout the repository
+      uses: actions/checkout@v4
+
+    - name: Build the executable
+      run: cargo build --locked --release
+
+    - name: Attach executable to the release
+      shell: bash
+      run: |
+        cp target/release/insider insider-linux-${{ matrix.arch }}
+        gh release upload "$TAG" insider-linux-${{ matrix.arch }} --clobber
+
+    # insider only needs glibc, so there is nothing to bundle:
+    # appimagetool wraps the executable, desktop entry and icon as they are
+    - name: Install appimagetool
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y desktop-file-utils
+        wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.arch }}.AppImage -O appimagetool
+        chmod +x appimagetool
+
+    - name: Assemble AppDir
+      run: |
+        mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/scalable/apps
+        cp target/release/insider AppDir/usr/bin/insider
+        cp dist/appimage/insider.desktop AppDir/insider.desktop
+        cp dist/appimage/insider.desktop AppDir/usr/share/applications/insider.desktop
+        cp assets/icon/insider.svg AppDir/insider.svg
+        cp assets/icon/insider.svg AppDir/usr/share/icons/hicolor/scalable/apps/insider.svg
+        ln -s insider.svg AppDir/.DirIcon
+        ln -s usr/bin/insider AppDir/AppRun
+        desktop-file-validate AppDir/insider.desktop
+
+    - name: Build the AppImage
+      env:
+        ARCH: ${{ matrix.arch }}
+        VERSION: ${{ github.event.release.tag_name }}
+        # runners have no FUSE; the AppImage made does not need it either
+        APPIMAGE_EXTRACT_AND_RUN: 1
+      run: ./appimagetool --no-appstream AppDir Insider-${{ matrix.arch }}.AppImage
+
+    - name: Attach AppImage to the release
+      shell: bash
+      run: gh release upload "$TAG" Insider-${{ matrix.arch }}.AppImage --clobber
+
+  linux_armhf:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout the repository
+      uses: actions/checkout@v4
+
+    - name: Prepare cross-platform environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+        rustup target add arm-unknown-linux-gnueabihf
+
+    - name: Build the executable
+      env:
+        CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+      run: cargo build --locked --release --target=arm-unknown-linux-gnueabihf
+
+    - name: Attach artifact to the release
+      shell: bash
+      run: |
+        cp target/arm-unknown-linux-gnueabihf/release/insider insider-linux-armhf
+        gh release upload "$TAG" insider-linux-armhf --clobber
+
+  macos:
+    runs-on: macos-latest
+
+    strategy:
+      matrix:
+        include:
+        - arch: aarch64
+          target: aarch64-apple-darwin
+        - arch: x86_64
+          target: x86_64-apple-darwin
+
+    steps:
+    - name: Checkout the repository
+      uses: actions/checkout@v4
+
+    - name: Install Rust target
+      run: rustup target add ${{ matrix.target }}
+
+    - name: Build the executable
+      env:
+        MACOSX_DEPLOYMENT_TARGET: "11.0"
+      run: cargo build --locked --release --target ${{ matrix.target }}
+
+    - name: Attach artifact to the release
+      shell: bash
+      run: |
+        cp target/${{ matrix.target }}/release/insider insider-macos-${{ matrix.arch }}
+        gh release upload "$TAG" insider-macos-${{ matrix.arch }} --clobber
+
+  windows:
+    runs-on: windows-2022
+
+    steps:
+    - run: git config --global core.autocrlf false
+
+    - name: Checkout the repository
+      uses: actions/checkout@v4
+
+    - name: Build the executable
+      run: cargo build --locked --release
+
+    - name: Attach artifact to the release
+      shell: bash
+      run: |
+        cp target/release/insider.exe insider-windows-x86_64.exe
+        gh release upload "$TAG" insider-windows-x86_64.exe --clobber
