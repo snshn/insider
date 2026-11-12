@@ -4,6 +4,8 @@ version = "0.1.1"
 edition = "2021"
 license = "0BSD"
 description = "Realtime TUI hardware inspector that draws your mainboard and everything plugged into it"
+homepage = "https://github.com/snshn/insider"
+repository = "https://github.com/snshn/insider"
 readme = "README.md"
 rust-version = "1.74"
 
