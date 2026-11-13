@@ -1,6 +1,7 @@
 //! insider — a realtime TUI hardware inspector that draws your mainboard.
 
 mod board;
+mod color;
 mod json;
 mod model;
 mod platform;
@@ -29,6 +30,8 @@ OPTIONS:
   -d, --dump                  print everything detected (plain text) and exit
   -e, --exploded              start in exploded view
   -i, --interval <MS>         refresh interval in milliseconds (default 1000)
+      --color <truecolor|256> force colour depth (default: detect;
+                              also settable via INSIDER_COLOR)
       --no-nvidia-smi         never run nvidia-smi
   -h, --help                  show this help
   -V, --version               show version
@@ -53,6 +56,7 @@ struct Args {
     exploded: bool,
     interval: u64,
     nvidia: bool,
+    color: Option<color::Depth>,
 }
 
 fn parse_args() -> Args {
@@ -63,6 +67,7 @@ fn parse_args() -> Args {
         exploded: false,
         interval: 1000,
         nvidia: true,
+        color: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -79,6 +84,16 @@ fn parse_args() -> Args {
                     .max(200)
             }
             "--no-nvidia-smi" => a.nvidia = false,
+            "--color" | "--colour" => {
+                let v = it.next().unwrap_or_default();
+                match color::parse_depth(&v) {
+                    Some(d) => a.color = Some(d),
+                    None => {
+                        eprintln!("insider: --color takes \"truecolor\" or \"256\", not {v:?}");
+                        std::process::exit(2)
+                    }
+                }
+            }
             "-h" | "--help" => {
                 print!("{}", help());
                 std::process::exit(0)
@@ -147,9 +162,10 @@ fn main() -> io::Result<()> {
     });
 
     let mut app = ui::App::new(boards, idx, load_errors, first, args.exploded);
+    let depth = args.color.unwrap_or_else(color::detect);
     let mut terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableMouseCapture);
-    let res = run(&mut terminal, &mut app, &rx);
+    let res = run(&mut terminal, &mut app, &rx, depth);
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     res
@@ -159,12 +175,18 @@ fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut ui::App,
     rx: &Receiver<model::Snapshot>,
+    depth: color::Depth,
 ) -> io::Result<()> {
     loop {
         while let Ok(s) = rx.try_recv() {
             app.set_snapshot(s);
         }
-        terminal.draw(|f| ui::draw_frame(f, app))?;
+        terminal.draw(|f| {
+            ui::draw_frame(f, app);
+            if depth == color::Depth::Ansi256 {
+                color::downsample(f.buffer_mut());
+            }
+        })?;
         if event::poll(Duration::from_millis(60))? {
             match event::read()? {
                 Event::Key(k) if k.kind == KeyEventKind::Press => app.on_key(k.code, k.modifiers),

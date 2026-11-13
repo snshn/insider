@@ -50,6 +50,11 @@ On Windows run it in Windows Terminal (`.\target\release\insider.exe`). On
 macOS any terminal works; one with 24-bit colour (iTerm2, WezTerm, Ghostty,
 kitty, or Terminal on macOS 26+) shows the board colours as intended.
 
+insider detects 24-bit colour from `COLORTERM`, `TERM` and `TERM_PROGRAM`, and
+falls back to the 256-colour palette otherwise (e.g. Terminal.app before macOS
+26, which garbles 24-bit sequences into stray coloured blocks). Override with
+`--color truecolor|256` or `INSIDER_COLOR=truecolor|256`.
+
 | key | action |
 | --- | --- |
 | `e` `x` Space | assembled ⇄ exploded |
@@ -59,7 +64,7 @@ kitty, or Terminal on macOS 26+) shows the board colours as intended.
 | `?` | help |
 | `q` | quit |
 
-Options: `--board <file>` (try a layout file you're writing), `--list-boards`, `--exploded`, `--interval <ms>`,
+Options: `--board <file>` (try a layout file you're writing), `--list-boards`, `--exploded`, `--interval <ms>`, `--color <truecolor|256>`,
 `--no-nvidia-smi`, and `--dump`, which prints everything detected plus the
 slot assignment as plain text. That dump is the thing to share when a board
 needs a proper layout.
