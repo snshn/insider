@@ -14,7 +14,9 @@ use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEventKind,
 };
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::SetTitle;
 use std::io;
+use std::io::Write;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -165,10 +167,25 @@ fn main() -> io::Result<()> {
     let depth = args.color.unwrap_or_else(color::detect);
     let mut terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableMouseCapture);
+    title_stack(true);
     let res = run(&mut terminal, &mut app, &rx, depth);
     let _ = execute!(io::stdout(), DisableMouseCapture);
+    title_stack(false);
     ratatui::restore();
     res
+}
+
+/// Save (push) or restore (pop) the terminal's window title, so quitting
+/// gives back whatever the shell had. xterm's CSI 22/23 t; terminals that
+/// don't know it ignore it. Skipped on Windows, where old consoles would
+/// print the bytes.
+fn title_stack(push: bool) {
+    if cfg!(windows) {
+        return;
+    }
+    let mut out = io::stdout();
+    let _ = out.write_all(if push { b"\x1b[22;0t" } else { b"\x1b[23;0t" });
+    let _ = out.flush();
 }
 
 fn run(
@@ -177,9 +194,15 @@ fn run(
     rx: &Receiver<model::Snapshot>,
     depth: color::Depth,
 ) -> io::Result<()> {
+    let mut title = String::new();
     loop {
         while let Ok(s) = rx.try_recv() {
             app.set_snapshot(s);
+        }
+        let t = ui::window_title(app);
+        if t != title {
+            let _ = execute!(io::stdout(), SetTitle(&t));
+            title = t;
         }
         terminal.draw(|f| {
             ui::draw_frame(f, app);

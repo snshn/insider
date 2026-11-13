@@ -2135,15 +2135,34 @@ fn pic_edge(left: bool, kind: Kind) -> Edge {
 
 // ---------------------------------------------------------------- frame
 
+/// Terminal window title, e.g. "Insider - Razer Blade".
+pub fn window_title(app: &App) -> String {
+    let g = |k: &str| {
+        app.snap
+            .dmi
+            .get(k)
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default()
+    };
+    let (vendor, product) = (g("sys_vendor"), g("product_name"));
+    // don't repeat the vendor when the model name already starts with it
+    let name = if !vendor.is_empty() && product.to_lowercase().starts_with(&vendor.to_lowercase()) {
+        product
+    } else {
+        format!("{vendor} {product}").trim().to_string()
+    };
+    if name.is_empty() {
+        "Insider".into()
+    } else {
+        format!("Insider - {name}")
+    }
+}
+
 pub fn draw_frame(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(4),
-        Constraint::Length(1),
-    ])
-    .split(area);
-    let (head, body, foot) = (rows[0], rows[1], rows[2]);
+    // no header row: the machine name goes in the window title (window_title)
+    let rows = Layout::vertical([Constraint::Min(4), Constraint::Length(1)]).split(area);
+    let (body, foot) = (rows[0], rows[1]);
     let (view, side) = if app.details && body.width >= 70 {
         let c = Layout::horizontal([Constraint::Min(40), Constraint::Length(46)]).split(body);
         (c[0], Some(c[1]))
@@ -2163,37 +2182,18 @@ pub fn draw_frame(f: &mut Frame, app: &mut App) {
     }
     app.hits = hits;
 
-    // header
-    let d = &app.snap.dmi;
-    let g = |k: &str| d.get(k).cloned().unwrap_or_default();
     let mode = if app.exploded {
         " EXPLODED "
     } else {
         " SEMI-EXPLODED "
     };
-    let hdr = Line::from(vec![
-        Span::styled(
-            " INSIDER ",
-            Style::new()
-                .fg(Color::Black)
-                .bg(Color::Rgb(110, 200, 170))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{} {}", g("sys_vendor"), g("product_name")),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(mode, Style::new().fg(Color::Black).bg(LG)),
-    ]);
-    f.render_widget(Paragraph::new(hdr), head);
 
     let notes = app.snap.notes.len() + app.load_errors.len();
     let k = |s: &'static str| Span::styled(s, Style::new().fg(HI).add_modifier(Modifier::BOLD));
     let ft = Line::from(vec![
+        Span::styled(mode, Style::new().fg(Color::Black).bg(LG)),
         k(" e"),
-        Span::raw(" explode  "),
+        Span::raw(" toggle  "),
         k("click/Tab/arrows"),
         Span::raw(" select  "),
         k("Enter"),
