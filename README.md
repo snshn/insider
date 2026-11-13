@@ -55,6 +55,27 @@ falls back to the 256-colour palette otherwise (e.g. Terminal.app before macOS
 26, which garbles 24-bit sequences into stray coloured blocks). Override with
 `--color truecolor|256` or `INSIDER_COLOR=truecolor|256`.
 
+### Build in Docker
+
+No Rust on the host needed, only Docker (or Podman) and make. The container
+cross-compiles with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild),
+so a Linux container produces a native binary for your machine, macOS included.
+
+    make build              # throwaway build, binary in ./out/<target>/insider
+    sudo make install       # copy it to /usr/local/bin (PREFIX=... to change)
+
+    make dev                # incremental build, source mounted with -v
+    make run                # same, then run it
+    make test / lint / fmt / shell
+
+`make build` extracts the binary with `docker build --output`, so no container
+is left behind. `make dev` mounts the source and keeps build artifacts in the
+`insider-target` volume, so rebuilds are fast; it runs as you, so `./out` stays
+yours. `TARGET` defaults to this machine; set it to cross-build, e.g.
+`make build TARGET=x86_64-pc-windows-gnu`, or run `make dist` for every
+release target. `make clean` removes `./out` and the volume. On macOS the
+binary is ad-hoc signed after building (Apple silicon won't run it otherwise).
+
 | key | action |
 | --- | --- |
 | `e` `x` Space | assembled ⇄ exploded |
