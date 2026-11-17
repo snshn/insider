@@ -62,6 +62,7 @@ Cargo.toml            ratatui 0.29 (crossterm via ratatui::crossterm), serde, to
 boards/
   stock-laptop.toml   generic laptop: lid + base peripherals left, board right
   stock-atx.toml      generic ATX desktop board
+  apple-macbook-air-m3.toml  MacBook Air M3 (Mac15,12 / Mac15,13), traced from a board photo
 src/
   main.rs             CLI, startup, probe thread, event loop, --dump
   model.rs            Kind, Part, Core, Snapshot, formatting helpers
@@ -177,6 +178,8 @@ exploded).
 name = "…"; form = "laptop" | "desktop"; generic = true|false
 width = 160; height = 50
 pcb = { x, y, w, h }        # the board itself; everything else is laid out around it
+pcb_extra = [{ x, y, w, h }]  # optional: more rectangles merged into the PCB (tabs, notches
+                            # filled in); one outline is drawn around the union
 color = "#123524"           # PCB colour
 [[match]]                   # any table whose fields all match the DMI values (case-insensitive substring)
 sys_vendor = "Razer"; product_name = "Blade 15"   # also board_vendor, board_name
@@ -184,7 +187,8 @@ sys_vendor = "Razer"; product_name = "Blade 15"   # also board_vendor, board_nam
 [[slot]]
 id, kind, x, y, w, h, label
 accepts = ["gpu", "pci"]    # default: [kind]; pcie → gpu,pci,ssd,wifi,ethernet; connector, rj45 → none
-soldered = true             # never leaves the board
+soldered = true             # never leaves the board; a soldered dimm/ssd/wifi slot is drawn
+                            # as packages on the board, not a module in a socket
 multi = true                # takes every remaining part of its kinds
 bind = ["ChannelA-DIMM0"]   # only parts exposing one of these keys
 edge = "left|right|top|bottom"   # side with the contacts (dimm, ssd, wifi)

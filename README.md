@@ -43,7 +43,7 @@ what the system already offers (files, built-in tools) and parses it.
 | | extras with elevated rights | reads from |
 | --- | --- | --- |
 | Linux | `sudo insider`: RAM SPD timings, CPU package power | sysfs/procfs; `lspci` (pciutils), `lsusb` (usbutils), `udevadm` (systemd), `dmidecode`, `nvidia-smi` when present |
-| macOS | `sudo insider`: CPU/GPU temperatures and fans (Intel), per-core clocks and load, CPU/GPU/package power, thermal pressure | `system_profiler`, `sysctl`, `ioreg`, `vm_stat`, `netstat`, `ifconfig`, `hidutil`, `networksetup`, `osascript`; `powermetrics` as root |
+| macOS | Apple silicon temperatures without root (IOKit). `sudo insider`: CPU/GPU temperatures and fans (Intel), per-core clocks and load, CPU/GPU/package power, thermal pressure | `system_profiler`, `sysctl`, `ioreg`, `vm_stat`, `netstat`, `ifconfig`, `hidutil`, `networksetup`, `osascript`; `powermetrics` as root; IOKit HID sensors (Apple silicon) |
 | Windows | Administrator terminal: ACPI thermal zones, disk temperature/wear, Secure Boot state | Windows PowerShell 5.1 (CIM/WMI, PnP, registry), `netsh`; `nvidia-smi` when present |
 
 On Windows run it in Windows Terminal (`.\target\release\insider.exe`). On
@@ -101,7 +101,10 @@ needs a proper layout.
 * **macOS**: everything slow (`system_profiler`) is refreshed on a background
   thread every 30 s; Wi-Fi/Bluetooth details arrive a few seconds after start.
   Apple silicon has no command-line source for per-sensor temperatures, so
-  insider shows thermal pressure (as root) instead. RAM on Apple silicon is
+  insider reads them, without root, from IOKit's HID sensors (a private API
+  loaded at run time; see `src/iokit_temps.rs`). The CPU and GPU show the
+  sensor averages and the logic board lists every sensor. If that API ever
+  stops working, it falls back to thermal pressure (as root). RAM on Apple silicon is
   one "unified memory" part, bound as `unified`.
 * **Windows**: the inventory comes from one PowerShell run at start (and every
   30 s); live values from one PowerShell process kept running, so refreshes

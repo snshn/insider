@@ -1468,6 +1468,10 @@ fn draw(cv: &mut Cv, r: Rect, slot: Option<&SlotDef>, part: Option<&Part>, ctx: 
             Some(Kind::UsbInternal) => return draw_port(cv, r, part, ctx, true),
             Some(Kind::Connector) => return draw_connector(cv, r, ctx),
             Some(Kind::Rj45) => return draw_rj45(cv, r, None, ctx),
+            // soldered RAM, NAND and Wi-Fi are packages on the board, not modules
+            Some(k @ (Kind::Dimm | Kind::Ssd | Kind::Wifi)) if soldered => {
+                return draw_chip(cv, r, k, part, ctx)
+            }
             Some(k @ (Kind::Dimm | Kind::Ssd | Kind::Wifi)) => {
                 return draw_module_slot(cv, r, k, part, ctx)
             }
@@ -1744,8 +1748,24 @@ fn board_bg(cv: &mut Cv, app: &App, xf: &Xf, hits: &mut Vec<(Rect, String)>) {
         .as_deref()
         .and_then(parse_color)
         .unwrap_or(Color::Rgb(18, 53, 36));
-    cv.bg(pcb, pc);
-    cv.frame(pcb, &ROUND, Style::new().fg(lighten(pc, 45)));
+    // the PCB is the union of `pcb` and any `pcb_extra` rectangles (tabs, wings)
+    let extra: Vec<Rect> = b
+        .pcb_extra
+        .iter()
+        .map(|p| xf.rect(p.x, p.y, p.w, p.h))
+        .collect();
+    let edge = Style::new().fg(lighten(pc, 45));
+    if extra.is_empty() {
+        cv.bg(pcb, pc);
+        cv.frame(pcb, &ROUND, edge);
+    } else {
+        let parts: Vec<Rect> = std::iter::once(pcb).chain(extra.iter().copied()).collect();
+        for r in &parts {
+            cv.bg(*r, pc);
+        }
+        outline(cv, &parts, edge);
+        hits.extend(extra.iter().map(|r| (*r, "board".to_string())));
+    }
     let d = &app.snap.dmi;
     let name = [d.get("board_vendor"), d.get("board_name")]
         .into_iter()
@@ -1764,6 +1784,62 @@ fn board_bg(cv: &mut Cv, app: &App, xf: &Xf, hits: &mut Vec<(Rect, String)>) {
         );
     }
     hits.push((pcb, "board".into()));
+}
+
+/// Rounded outline along the inside edge of a union of rectangles.
+fn outline(cv: &mut Cv, rects: &[Rect], st: Style) {
+    let inside = |x: i32, y: i32| {
+        x >= 0
+            && y >= 0
+            && rects.iter().any(|r| {
+                (x as u16) >= r.x
+                    && (x as u16) < r.x + r.width
+                    && (y as u16) >= r.y
+                    && (y as u16) < r.y + r.height
+            })
+    };
+    // a border cell is inside with at least one of its 8 neighbours outside
+    let border = |x: i32, y: i32| {
+        inside(x, y) && (-1..=1).any(|dy| (-1..=1).any(|dx| !inside(x + dx, y + dy)))
+    };
+    // two neighbouring border cells are joined if they touch the same outside cell
+    let joined = |x: i32, y: i32, dx: i32, dy: i32| {
+        let (nx, ny) = (x + dx, y + dy);
+        border(nx, ny)
+            && (-1..=1).any(|oy| {
+                (-1..=1).any(|ox| {
+                    let (cx, cy) = (x + ox, y + oy);
+                    !inside(cx, cy) && (cx - nx).abs() <= 1 && (cy - ny).abs() <= 1
+                })
+            })
+    };
+    let x0 = rects.iter().map(|r| r.x).min().unwrap_or(0) as i32;
+    let y0 = rects.iter().map(|r| r.y).min().unwrap_or(0) as i32;
+    let x1 = rects.iter().map(|r| r.x + r.width).max().unwrap_or(0) as i32;
+    let y1 = rects.iter().map(|r| r.y + r.height).max().unwrap_or(0) as i32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if !border(x, y) {
+                continue;
+            }
+            let ch = match (
+                joined(x, y, 0, -1),
+                joined(x, y, 0, 1),
+                joined(x, y, -1, 0),
+                joined(x, y, 1, 0),
+            ) {
+                (false, true, false, true) => '╭',
+                (false, true, true, false) => '╮',
+                (true, false, false, true) => '╰',
+                (true, false, true, false) => '╯',
+                (true, true, false, false) => '│',
+                (false, false, true, true) => '─',
+                (u, d, _, _) if u || d => '│',
+                _ => '─',
+            };
+            cv.put(x, y, ch, st);
+        }
+    }
 }
 
 /// The LAN controller an RJ45 jack is wired to: the Ethernet part in its

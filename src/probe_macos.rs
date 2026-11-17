@@ -1,6 +1,6 @@
 //! macOS hardware probing (Intel and Apple silicon).
 //!
-//! No private frameworks, no FFI: everything comes from tools every Mac has.
+//! Everything but temperatures comes from tools every Mac has.
 //!
 //! * `system_profiler -json` — the inventory (model, RAM, SSD, GPUs, displays,
 //!   Wi-Fi, USB tree, audio, camera, battery health). Slow, so it is refreshed
@@ -12,6 +12,10 @@
 //! * `hidutil list` — the built-in keyboard and trackpad.
 //! * `powermetrics` (root only) — CPU/GPU temperatures and fan on Intel,
 //!   per-core clocks and load, package/CPU/GPU power, thermal pressure.
+//!
+//! The one exception to "no FFI": Apple silicon temperatures, which no tool
+//! prints, come from IOKit's HID sensors (`iokit_temps.rs`, macOS only,
+//! loaded at run time, no root needed).
 //!
 //! `INSIDER_CAPTURE=/dir` records every tool's output; replay it anywhere with
 //! `INSIDER_SYSROOT=/dir INSIDER_PLATFORM=macos`.
@@ -250,6 +254,43 @@ pub(crate) struct Pm {
     pub gpu_active: Option<f64>,
     pub pressure: Option<String>,
     pub cpu_thermal_level: Option<String>,
+    /// where cpu_temp / gpu_temp came from, when not powermetrics
+    pub cpu_temp_src: Option<&'static str>,
+    pub gpu_temp_src: Option<&'static str>,
+    /// IOKit HID sensors, (name, °C)
+    pub sensors: Vec<(String, f64)>,
+}
+
+/// Fill CPU/GPU temperatures powermetrics didn't give from IOKit HID sensor
+/// readings. Names differ by chip: M1-class chips have per-cluster "pACC/eACC
+/// MTR Temp Sensor*" and "GPU MTR Temp Sensor*"; later ones mostly expose
+/// "PMU tdie*" die sensors. Readings are averaged per group.
+pub(crate) fn apply_hid_temps(pm: &mut Pm, mut sensors: Vec<(String, f64)>) {
+    sensors.sort_by(|a, b| a.0.cmp(&b.0));
+    let avg = |pat: &[&str]| {
+        let v: Vec<f64> = sensors
+            .iter()
+            .filter(|(n, _)| pat.iter().any(|p| n.contains(p)))
+            .map(|(_, t)| *t)
+            .collect();
+        (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
+    };
+    if pm.cpu_temp.is_none() {
+        if let Some(t) = avg(&["pACC", "eACC"]) {
+            pm.cpu_temp = Some(t);
+            pm.cpu_temp_src = Some("CPU cluster sensors, average (IOKit)");
+        } else if let Some(t) = avg(&["tdie"]) {
+            pm.cpu_temp = Some(t);
+            pm.cpu_temp_src = Some("SoC die sensors, average (IOKit)");
+        }
+    }
+    if pm.gpu_temp.is_none() {
+        if let Some(t) = avg(&["GPU"]) {
+            pm.gpu_temp = Some(t);
+            pm.gpu_temp_src = Some("GPU sensors, average (IOKit)");
+        }
+    }
+    pm.sensors = sensors;
 }
 
 fn after_colon(l: &str) -> &str {
@@ -586,6 +627,9 @@ pub struct Prober {
     pm_ok: bool,
     vol: Option<(Instant, Option<String>)>,
     nvidia: HashMap<String, HashMap<String, String>>,
+    /// None until first tried; Some(None) if IOKit sensors aren't available
+    #[cfg(target_os = "macos")]
+    hid: Option<Option<crate::iokit_temps::Sensors>>,
 }
 
 impl Prober {
@@ -602,7 +646,28 @@ impl Prober {
             pm_ok: true,
             vol: None,
             nvidia: HashMap::new(),
+            #[cfg(target_os = "macos")]
+            hid: None,
         }
+    }
+
+    /// IOKit HID temperature readings; empty off macOS and when replaying a
+    /// capture (INSIDER_SYSROOT), where they'd describe the wrong machine.
+    #[cfg(target_os = "macos")]
+    fn hid_temps(&mut self) -> Vec<(String, f64)> {
+        if !crate::probe::sysroot().is_empty() {
+            return Vec::new();
+        }
+        self.hid
+            .get_or_insert_with(crate::iokit_temps::Sensors::open)
+            .as_ref()
+            .map(|s| s.read())
+            .unwrap_or_default()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn hid_temps(&mut self) -> Vec<(String, f64)> {
+        Vec::new()
     }
 
     pub fn settle(&self) {
@@ -656,11 +721,17 @@ impl Prober {
 
     pub fn gather(&mut self) -> Snapshot {
         let inv = self.inv.get();
-        let pm = self.powermetrics(&inv);
+        let mut pm = self.powermetrics(&inv);
+        let sensors = self.hid_temps();
+        apply_hid_temps(&mut pm, sensors);
         let mem_use = self.mem_use(&inv);
         let dmi = dmi(&inv);
         let mut parts = Vec::new();
-        parts.push(self.board(&inv, &dmi, &pm, mem_use));
+        let mut board = self.board(&inv, &dmi, &pm, mem_use);
+        for (name, t) in &pm.sensors {
+            board.prop(&format!("Sensor {name}"), format!("{t:.1} °C"));
+        }
+        parts.push(board);
         let accels = accels();
         parts.push(self.cpu(&inv, &pm, &accels));
         parts.extend(self.gpus(&inv, &pm, &accels));
@@ -696,15 +767,17 @@ impl Prober {
         parts.extend(pci_cards(&inv));
 
         let mut notes = self.notes.clone();
+        let hid_ok = !pm.sensors.is_empty();
         if !self.root {
-            notes.push(
-                "Not running as root: temperatures, fans, per-core clocks and power need `sudo insider` (they come from powermetrics)"
-                    .into(),
-            );
+            notes.push(if hid_ok {
+                "Not running as root: fans, per-core clocks and power need `sudo insider` (they come from powermetrics)".into()
+            } else {
+                "Not running as root: temperatures, fans, per-core clocks and power need `sudo insider` (they come from powermetrics)".into()
+            });
         }
-        if inv.apple_silicon() {
+        if inv.apple_silicon() && !hid_ok {
             notes.push(
-                "Apple silicon: macOS has no command-line tool for per-sensor temperatures; thermal pressure is shown instead"
+                "Apple silicon: couldn't read the temperature sensors through IOKit; thermal pressure is shown instead"
                     .into(),
             );
         }
@@ -887,7 +960,10 @@ impl Prober {
         }
         p.temp = pm.cpu_temp;
         if pm.cpu_temp.is_some() {
-            p.prop("Sensor", "SMC CPU die (powermetrics)");
+            p.prop(
+                "Sensor",
+                pm.cpu_temp_src.unwrap_or("SMC CPU die (powermetrics)"),
+            );
         }
 
         // physical cores; Intel threads of one core are numbered next to each other
@@ -1024,6 +1100,7 @@ impl Prober {
                 p.temp = f("Temperature(C)").filter(|t| *t > 0.0);
                 if p.temp.is_none() {
                     p.temp = pm.gpu_temp;
+                    p.opt("Sensor", pm.gpu_temp_src.filter(|_| p.temp.is_some()));
                 }
             }
             if let Some(nv) = self.nvidia.values().next() {
@@ -2251,6 +2328,57 @@ fn pci_cards(inv: &Inventory) -> Vec<Part> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sensors(v: &[(&str, f64)]) -> Vec<(String, f64)> {
+        v.iter().map(|(n, t)| (n.to_string(), *t)).collect()
+    }
+
+    #[test]
+    fn hid_temps_m1_style_names() {
+        let mut pm = Pm::default();
+        apply_hid_temps(
+            &mut pm,
+            sensors(&[
+                ("pACC MTR Temp Sensor0", 50.0),
+                ("eACC MTR Temp Sensor1", 40.0),
+                ("GPU MTR Temp Sensor1", 35.0),
+                ("PMU tdie1", 99.0),
+                ("NAND CH0 temp", 30.0),
+            ]),
+        );
+        assert_eq!(pm.cpu_temp, Some(45.0));
+        assert_eq!(pm.gpu_temp, Some(35.0));
+        assert!(pm.cpu_temp_src.unwrap().contains("CPU cluster"));
+        assert_eq!(pm.sensors.len(), 5);
+        assert_eq!(pm.sensors[0].0, "GPU MTR Temp Sensor1"); // sorted
+    }
+
+    #[test]
+    fn hid_temps_die_sensors_only() {
+        let mut pm = Pm::default();
+        apply_hid_temps(
+            &mut pm,
+            sensors(&[
+                ("PMU tdie1", 40.0),
+                ("PMU tdie2", 44.0),
+                ("gas gauge battery", 30.0),
+            ]),
+        );
+        assert_eq!(pm.cpu_temp, Some(42.0));
+        assert_eq!(pm.gpu_temp, None);
+        assert!(pm.cpu_temp_src.unwrap().contains("die"));
+    }
+
+    #[test]
+    fn hid_temps_keep_powermetrics() {
+        let mut pm = Pm {
+            cpu_temp: Some(70.0),
+            ..Pm::default()
+        };
+        apply_hid_temps(&mut pm, sensors(&[("pACC MTR Temp Sensor0", 50.0)]));
+        assert_eq!(pm.cpu_temp, Some(70.0));
+        assert_eq!(pm.cpu_temp_src, None);
+    }
 
     #[test]
     fn ioreg_battery() {
