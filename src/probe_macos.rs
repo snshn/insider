@@ -1901,6 +1901,7 @@ fn inputs(inv: &Inventory) -> (Vec<Part>, HashSet<String>) {
         p.prop("Name", &k.product);
         p.prop("Bus", &k.transport);
         p.prop("ID", format!("{:04x}:{:04x}", k.vendor, k.product_id));
+        crate::keymap::set_layout(&mut p, crate::keymap::macos());
         p.metric(k.transport.clone());
         claimed.insert(k.product.clone());
         out.push(p);

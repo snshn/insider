@@ -24,9 +24,13 @@ const GREEN_PCB: Color = Color::Rgb(22, 92, 54);
 const BLACK_PCB: Color = Color::Rgb(26, 26, 30);
 const METAL: Color = Color::Rgb(160, 162, 168);
 const SHIELD: Color = Color::Rgb(178, 180, 186);
+/// SoC package substrate (a slot with slots inside it)
+const PACKAGE: Color = Color::Rgb(30, 31, 34);
+/// Width of the details panel; entries stack key over value to fit
+const PANEL_W: u16 = 32;
 const CHIP: Color = Color::Rgb(18, 18, 21);
-/// Drive activity LED, like the HDD light on old cases.
-const LED_DISK: Color = Color::Rgb(255, 48, 28);
+/// Drive activity LED: blue, like the activity light on many modern drives.
+const LED_DISK: Color = Color::Rgb(40, 140, 255);
 /// RJ45 link LED: gigabit and faster / slower links.
 const LED_LINK: Color = Color::Rgb(40, 225, 80);
 const LED_LINK_SLOW: Color = Color::Rgb(255, 160, 20);
@@ -48,6 +52,8 @@ pub struct App {
     scroll: u16,
     max_scroll: u16,
     hits: Vec<(Rect, String)>,
+    /// where the details panel is, so clicks in it don't count as "outside"
+    panel: Option<Rect>,
     pub quit: bool,
     start: Instant,
 }
@@ -74,6 +80,7 @@ impl App {
             scroll: 0,
             max_scroll: 0,
             hits: Vec::new(),
+            panel: None,
             quit: false,
             start: Instant::now(),
         }
@@ -175,6 +182,14 @@ impl App {
         if let Some(k) = hit {
             self.select(k);
             self.details = true;
+            return;
+        }
+        let in_panel = self
+            .panel
+            .is_some_and(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+        if !in_panel {
+            // clicking empty space works like Esc (blur)
+            self.on_key(KeyCode::Esc, KeyModifiers::NONE);
         }
     }
 
@@ -1631,6 +1646,24 @@ fn draw_keyboard(cv: &mut Cv, r: Rect, p: Option<&Part>, ctx: &Ctx) {
     };
     let l = p.level.unwrap_or(0.0);
     let c = |v: f64| (v + 45.0 * l) as u8;
+    let caps_on = p.metrics.iter().any(|m| m.starts_with("Caps"));
+    let layout = p
+        .props
+        .iter()
+        .find(|(k, _)| k == "Layout")
+        .map_or("QWERTY", |(_, v)| v.as_str());
+    let legend_fg = Color::Rgb(c(150.0), c(150.0), c(160.0));
+    let cap_bg = Color::Rgb(c(40.0), c(40.0), c(46.0));
+    if keycaps(
+        cv,
+        k,
+        crate::keymap::by_name(layout),
+        cap_bg,
+        legend_fg,
+        caps_on,
+    ) {
+        return;
+    }
     let cap = Style::new()
         .fg(Color::Rgb(c(62.0), c(62.0), c(70.0)))
         .bg(deck);
@@ -1667,6 +1700,108 @@ fn draw_keyboard(cv: &mut Cv, r: Rect, p: Option<&Part>, ctx: &Ctx) {
             Style::new().fg(Color::Rgb(90, 235, 125)),
         );
     }
+}
+
+/// A keyboard with legends: staggered rows on a 15-unit grid like a laptop
+/// board (function row, numbers, three letter rows, modifiers and space).
+/// Returns false when the area is too small to tell keys apart, so the
+/// caller draws plain caps instead.
+fn keycaps(
+    cv: &mut Cv,
+    k: Rect,
+    km: &crate::keymap::Keymap,
+    cap_bg: Color,
+    fg: Color,
+    caps_on: bool,
+) -> bool {
+    let pitch = k.width as f32 / 15.0;
+    if pitch < 1.8 || k.height < 5 {
+        return false;
+    }
+    let mac = cfg!(target_os = "macos");
+    // (width in key units, legend)
+    let letters = |i: usize| {
+        km.rows[i]
+            .split(' ')
+            .map(|l| (1.0f32, l))
+            .collect::<Vec<_>>()
+    };
+    let fkeys = [
+        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+    ];
+    let mut fn_row = vec![(1.5f32, "esc")];
+    fn_row.extend(fkeys.iter().map(|f| (1.0, *f)));
+    fn_row.push((1.5, ""));
+    let mut num = letters(0);
+    num.push((2.0, "⌫"));
+    let mut top = vec![(1.5, "⇥")];
+    top.extend(letters(1));
+    top.last_mut().unwrap().0 = 1.5;
+    let mut home = vec![(1.75, "⇪")];
+    home.extend(letters(2));
+    home.push((2.25, "⏎"));
+    let mut bottom = vec![(2.25, "⇧")];
+    bottom.extend(letters(3));
+    bottom.push((2.75, "⇧"));
+    let space: Vec<(f32, &str)> = if mac {
+        vec![
+            (1.0, "fn"),
+            (1.0, "⌃"),
+            (1.0, "⌥"),
+            (1.25, "⌘"),
+            (5.5, ""),
+            (1.25, "⌘"),
+            (1.0, "⌥"),
+            (1.0, "←"),
+            (1.0, "↕"),
+            (1.0, "→"),
+        ]
+    } else {
+        vec![
+            (1.0, "ctrl"),
+            (1.0, "fn"),
+            (1.0, "win"),
+            (1.25, "alt"),
+            (5.5, ""),
+            (1.25, "alt"),
+            (1.0, "ctrl"),
+            (1.0, "←"),
+            (1.0, "↕"),
+            (1.0, "→"),
+        ]
+    };
+    let mut rows = vec![fn_row, num, top, home, bottom, space];
+    // rows with a gap between them if there is room, else packed; drop the
+    // function row before going below one line per row
+    let h = k.height as usize;
+    if h < rows.len() {
+        rows.remove(0);
+    }
+    let stride = if h >= rows.len() * 2 - 1 { 2 } else { 1 };
+    let used = (rows.len() - 1) * stride + 1;
+    let y0 = k.y as usize + (h - used) / 2;
+    let cap = Style::new().bg(cap_bg).fg(fg);
+    for (ri, row) in rows.iter().enumerate() {
+        let y = (y0 + ri * stride) as i32;
+        let mut u = 0.0f32;
+        for &(w, legend) in row {
+            let xs = k.x as i32 + (u * pitch).round() as i32;
+            let xe = k.x as i32 + ((u + w) * pitch).round() as i32 - 1; // one-cell gap
+            u += w;
+            let cw = (xe - xs).max(1);
+            cv.fill(Rect::new(xs as u16, y as u16, cw as u16, 1), ' ', cap);
+            let lw = legend.chars().count() as i32;
+            if lw > 0 && lw <= cw {
+                let st = if legend == "⇪" && caps_on {
+                    cap.fg(Color::Rgb(90, 235, 125))
+                } else {
+                    cap
+                };
+                cv.text(xs + (cw - lw) / 2, y, legend, lw, st);
+            }
+        }
+    }
+    true
 }
 
 fn draw_speaker(cv: &mut Cv, r: Rect, p: &Part, ctx: &Ctx) {
@@ -1766,6 +1901,24 @@ fn board_bg(cv: &mut Cv, app: &App, xf: &Xf, hits: &mut Vec<(Rect, String)>) {
         outline(cv, &parts, edge);
         hits.extend(extra.iter().map(|r| (*r, "board".to_string())));
     }
+    hits.push((pcb, "board".into()));
+}
+
+/// The board's name, silkscreened on the PCB where no slot covers it:
+/// bottom-right if free, else sliding left, then rows further up. Drawn
+/// after slots and cables, so it is never hidden.
+fn board_label(cv: &mut Cv, app: &App, xf: &Xf) {
+    let b = app.board();
+    let pcb = b
+        .pcb
+        .as_ref()
+        .map(|p| xf.rect(p.x, p.y, p.w, p.h))
+        .unwrap_or_else(|| xf.rect(0, 0, b.width, b.height));
+    let pc = b
+        .color
+        .as_deref()
+        .and_then(parse_color)
+        .unwrap_or(Color::Rgb(18, 53, 36));
     let d = &app.snap.dmi;
     let name = [d.get("board_vendor"), d.get("board_name")]
         .into_iter()
@@ -1773,17 +1926,36 @@ fn board_bg(cv: &mut Cv, app: &App, xf: &Xf, hits: &mut Vec<(Rect, String)>) {
         .cloned()
         .collect::<Vec<_>>()
         .join(" ");
-    if pcb.width > 8 && pcb.height > 3 && !name.is_empty() {
-        let n = (name.chars().count() as i32).min(pcb.width as i32 - 4);
-        cv.text(
-            pcb.x as i32 + pcb.width as i32 - 2 - n,
-            (pcb.y + pcb.height - 2) as i32,
-            &name,
-            n,
-            Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
-        );
+    if pcb.width <= 8 || pcb.height <= 3 || name.is_empty() {
+        return;
     }
-    hits.push((pcb, "board".into()));
+    let n = (name.chars().count() as i32).min(pcb.width as i32 - 4);
+    let slots: Vec<Rect> = b.slots.iter().map(|s| xf.slot(s)).collect();
+    // free = no slot within the text's row, with a one-cell gap either side
+    let free = |x: i32, y: i32| {
+        !slots.iter().any(|r| {
+            y >= r.y as i32
+                && y < (r.y + r.height) as i32
+                && x + n + 1 > r.x as i32
+                && x - 1 < (r.x + r.width) as i32
+        })
+    };
+    let (x0, x1) = (pcb.x as i32 + 2, pcb.x as i32 + pcb.width as i32 - 2 - n);
+    let (top, bottom) = (pcb.y as i32 + 1, (pcb.y + pcb.height) as i32 - 2);
+    let (x, y) = (top..=bottom)
+        .rev()
+        .find_map(|y| (x0..=x1).rev().find(|&x| free(x, y)).map(|x| (x, y)))
+        .unwrap_or((x1, bottom));
+    cv.text(
+        x,
+        y,
+        &name,
+        n,
+        Style::new()
+            .fg(Color::White)
+            .bg(pc)
+            .add_modifier(Modifier::BOLD),
+    );
 }
 
 /// Rounded outline along the inside edge of a union of rectangles.
@@ -2067,9 +2239,53 @@ fn scene(cv: &mut Cv, area: Rect, app: &App, hits: &mut Vec<(Rect, String)>) {
         markers.push(leader(cv, sx, sy, from_left, dst, edge_style(sel)));
     }
 
+    // A slot lying inside another one is part of it (e.g. the GPU on an
+    // SoC): the outer slot becomes a package, its own part is drawn above
+    // the inner slots. Draw outer slots first so the inner ones end up on top
+    // (and win clicks, which look at the last hit first).
+    let inside = |t: &SlotDef, s: &SlotDef| {
+        !std::ptr::eq(t, s)
+            && t.x >= s.x
+            && t.y >= s.y
+            && t.x + t.w <= s.x + s.w
+            && t.y + t.h <= s.y + s.h
+    };
+    let mut order: Vec<usize> = (0..b.slots.len()).collect();
+    order.sort_by_key(|&i| b.slots.iter().filter(|s| inside(&b.slots[i], s)).count());
+
     // slots
-    for (si, s) in b.slots.iter().enumerate() {
-        let r = xf.slot(s);
+    for si in order {
+        let s = &b.slots[si];
+        let mut r = xf.slot(s);
+        let inner_top = b
+            .slots
+            .iter()
+            .filter(|t| inside(t, s))
+            .map(|t| xf.slot(t).y)
+            .min();
+        if let (Some(top), false) = (inner_top, s.catchall) {
+            // the package: substrate and outline around everything inside
+            let sel = app.asg.slots[si].iter().any(|&i| app.is_sel(&parts[i].id));
+            cv.bg(r, PACKAGE);
+            cv.frame(
+                r,
+                &ROUND,
+                if sel {
+                    edge_style(true)
+                } else {
+                    Style::new().fg(lighten(PACKAGE, 40))
+                },
+            );
+            let key = app.asg.slots[si]
+                .iter()
+                .map(|&i| &parts[i])
+                .find(|p| p.present)
+                .map_or_else(|| slot_key(s), |p| p.id.clone());
+            hits.push((r, key));
+            if top > r.y + 2 && r.width > 2 {
+                r = Rect::new(r.x + 1, r.y + 1, r.width - 2, top - r.y - 1);
+            }
+        }
         let ps = &app.asg.slots[si];
         let present: Vec<&Part> = ps
             .iter()
@@ -2128,6 +2344,7 @@ fn scene(cv: &mut Cv, area: Rect, app: &App, hits: &mut Vec<(Rect, String)>) {
     for (x, y, ch, st) in markers {
         cv.put(x, y, ch, st);
     }
+    board_label(cv, app, &xf);
 
     // detached parts, with their data underneath
     for p in &placed {
@@ -2236,11 +2453,11 @@ pub fn window_title(app: &App) -> String {
 
 pub fn draw_frame(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    // no header row: the machine name goes in the window title (window_title)
-    let rows = Layout::vertical([Constraint::Min(4), Constraint::Length(1)]).split(area);
-    let (body, foot) = (rows[0], rows[1]);
+    // no header or footer: the machine name is in the window title
+    // (window_title), keys are under `?`, notes in the board's details
+    let body = area;
     let (view, side) = if app.details && body.width >= 70 {
-        let c = Layout::horizontal([Constraint::Min(40), Constraint::Length(46)]).split(body);
+        let c = Layout::horizontal([Constraint::Min(40), Constraint::Length(PANEL_W)]).split(body);
         (c[0], Some(c[1]))
     } else if app.details {
         (body, Some(body))
@@ -2258,36 +2475,7 @@ pub fn draw_frame(f: &mut Frame, app: &mut App) {
     }
     app.hits = hits;
 
-    let mode = if app.exploded {
-        " EXPLODED "
-    } else {
-        " SEMI-EXPLODED "
-    };
-
-    let notes = app.snap.notes.len() + app.load_errors.len();
-    let k = |s: &'static str| Span::styled(s, Style::new().fg(HI).add_modifier(Modifier::BOLD));
-    let ft = Line::from(vec![
-        Span::styled(mode, Style::new().fg(Color::Black).bg(LG)),
-        k(" e"),
-        Span::raw(" toggle  "),
-        k("click/Tab/arrows"),
-        Span::raw(" select  "),
-        k("Enter"),
-        Span::raw(" details  "),
-        k("?"),
-        Span::raw(" help  "),
-        k("q"),
-        Span::raw(" quit"),
-        Span::styled(
-            if notes > 0 {
-                format!("   ⚠ {notes} notes: select the board (Enter) to read")
-            } else {
-                String::new()
-            },
-            Style::new().fg(Color::Rgb(255, 150, 50)),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(ft).style(Style::new().fg(DIMTXT)), foot);
+    app.panel = side;
 
     if let Some(side) = side {
         let (title, lines) = details(app);
@@ -2344,7 +2532,10 @@ pub fn draw_frame(f: &mut Frame, app: &mut App) {
             ]),
             Line::from(vec![k("Enter d i"), Span::raw("toggle the detail panel")]),
             Line::from(vec![k("PgUp PgDn wheel"), Span::raw("scroll details")]),
-            Line::from(vec![k("Esc"), Span::raw("close panel / clear selection")]),
+            Line::from(vec![
+                k("Esc, click away"),
+                Span::raw("close panel / clear selection"),
+            ]),
             Line::from(vec![k("q Ctrl-C"), Span::raw("quit")]),
             Line::raw(""),
             Line::raw("Peripherals (screen, keyboard, battery, fans, USB devices…)"),
@@ -2395,11 +2586,14 @@ fn wrapped_rows(lines: &[Line], w: usize) -> usize {
         .sum()
 }
 
-fn kv<'a>(k: &str, v: &str) -> Line<'a> {
-    Line::from(vec![
-        Span::styled(format!("{k}: "), Style::new().fg(Color::Rgb(120, 190, 200))),
-        Span::raw(v.to_string()),
-    ])
+/// A detail entry, stacked to keep the panel narrow: the key, its value
+/// below, then a blank line.
+fn kv<'a>(k: &str, v: &str) -> Vec<Line<'a>> {
+    vec![
+        Line::styled(format!("{k}:"), Style::new().fg(Color::Rgb(120, 190, 200))),
+        Line::raw(v.to_string()),
+        Line::raw(""),
+    ]
 }
 
 fn part_lines(p: &Part) -> Vec<Line<'static>> {
@@ -2412,19 +2606,24 @@ fn part_lines(p: &Part) -> Vec<Line<'static>> {
         v.push(Line::styled("(not present)", Style::new().fg(Color::Gray)));
     }
     if let Some(t) = p.temp {
-        v.push(Line::from(vec![
-            Span::styled("Temperature: ", Style::new().fg(Color::Rgb(120, 190, 200))),
-            Span::styled(
-                fmt_temp(t),
-                Style::new().fg(tcolor(t)).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        v.push(Line::raw(""));
+        v.push(Line::styled(
+            "Temperature:",
+            Style::new().fg(Color::Rgb(120, 190, 200)),
+        ));
+        v.push(Line::styled(
+            fmt_temp(t),
+            Style::new().fg(tcolor(t)).add_modifier(Modifier::BOLD),
+        ));
     }
     if !p.metrics.is_empty() {
-        v.push(Line::styled(
-            p.metrics.join(" · "),
-            Style::new().add_modifier(Modifier::BOLD),
-        ));
+        v.push(Line::raw(""));
+        for m in &p.metrics {
+            v.push(Line::styled(
+                m.clone(),
+                Style::new().add_modifier(Modifier::BOLD),
+            ));
+        }
     }
     if !p.cores.is_empty() {
         v.push(Line::raw(""));
@@ -2450,7 +2649,7 @@ fn part_lines(p: &Part) -> Vec<Line<'static>> {
     }
     v.push(Line::raw(""));
     for (k, val) in &p.props {
-        v.push(kv(k, val));
+        v.extend(kv(k, val));
     }
     v
 }
@@ -2463,11 +2662,12 @@ fn details(app: &App) -> (String, Vec<Line<'static>>) {
         let Some((si, s)) = b.slots.iter().enumerate().find(|(_, s)| s.id == id) else {
             return ("?".into(), vec![]);
         };
-        let mut v = vec![
+        let mut v = [
             kv("Slot", &s.label()),
             kv("Kind", s.kind().name()),
             kv("Soldered", if s.soldered { "yes" } else { "no" }),
-        ];
+        ]
+        .concat();
         let mut ps: Vec<&Part> = app.asg.slots[si]
             .iter()
             .map(|&i| &parts[i])
@@ -2494,7 +2694,7 @@ fn details(app: &App) -> (String, Vec<Line<'static>>) {
             v.push(Line::styled("Empty", Style::new().fg(Color::Gray)));
             for &i in &app.asg.slots[si] {
                 for (k, val) in &parts[i].props {
-                    v.push(kv(k, val));
+                    v.extend(kv(k, val));
                 }
             }
         }

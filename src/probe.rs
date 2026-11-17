@@ -149,17 +149,27 @@ pub(crate) fn replay(cmd: &str, args: &[&str]) -> Option<String> {
         .ok()
 }
 
+/// A command for a background probe: no stdin, and on Unix in its own
+/// process group. Terminals such as Terminal.app name the tty's foreground
+/// process in the window title; outside the foreground group, `ioreg`,
+/// `system_profiler` & co. don't flash up there while insider samples.
+pub(crate) fn quiet(cmd: &str) -> Command {
+    let mut c = Command::new(cmd);
+    c.stdin(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
+    c
+}
+
 pub(crate) fn run(cmd: &str, args: &[&str]) -> Option<String> {
     if !sysroot().is_empty() {
         // Replaying a captured tree: use recorded output, never the live system.
         return replay(cmd, args);
     }
-    let out = Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let out = quiet(cmd).args(args).stderr(Stdio::null()).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -2293,6 +2303,7 @@ fn inputs(dmi: &HashMap<String, String>) -> (Vec<Part>, HashSet<String>) {
         p.prop("Bus", bus_name(k.bus));
         p.prop("Phys", &k.phys);
         p.prop("Handlers", k.handlers.join(" "));
+        crate::keymap::set_layout(&mut p, crate::keymap::linux());
         let input = k.sysfs.rsplit('/').next().unwrap_or("").to_string();
         for (led, label) in [
             ("capslock", "Caps Lock"),

@@ -185,7 +185,7 @@ label = "eDP"
 [[slot]]
 id = "camc"
 kind = "connector"
-x = 144
+x = 142
 y = 2
 w = 6
 h = 2
@@ -195,31 +195,33 @@ label = "CAM"
 [[slot]]
 id = "wifi"
 kind = "wifi"
-x = 137
+x = 135
 y = 15
 w = 13
 h = 5
 soldered = true
 label = "Wi-Fi"
 
-# the M3 package: SoC (CPU + GPU) and unified memory
+# the M3 package. CPU and GPU are on the same die, so the GPU slot sits
+# inside the CPU slot, which makes the CPU slot the package around both.
+# The unified memory is next to it.
 [[slot]]
 id = "cpu0"
 kind = "cpu"
-x = 150
-y = 5
-w = 22
-h = 9
+x = 149
+y = 3
+w = 24
+h = 15
 soldered = true
-label = "M3"
+label = "CPU"
 
 [[slot]]
 id = "gpu0"
 kind = "gpu"
 x = 150
-y = 15
+y = 13
 w = 22
-h = 3
+h = 4
 soldered = true
 label = "GPU"
 

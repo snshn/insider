@@ -5,6 +5,7 @@ mod color;
 #[cfg(target_os = "macos")]
 mod iokit_temps;
 mod json;
+mod keymap;
 mod model;
 mod platform;
 mod probe;
@@ -12,6 +13,7 @@ mod probe_macos;
 mod probe_windows;
 mod ui;
 
+use ratatui::crossterm::cursor::MoveTo;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEventKind,
 };
@@ -212,6 +214,10 @@ fn run(
                 color::downsample(f.buffer_mut());
             }
         })?;
+        // Park the (hidden) cursor in the top-left corner. macOS draws its
+        // input-source badge ("CO", "EN", caps lock ...) at the text cursor,
+        // which ratatui otherwise leaves wherever it drew last.
+        let _ = execute!(io::stdout(), MoveTo(0, 0));
         if event::poll(Duration::from_millis(60))? {
             match event::read()? {
                 Event::Key(k) if k.kind == KeyEventKind::Press => app.on_key(k.code, k.modifiers),

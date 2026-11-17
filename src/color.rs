@@ -76,8 +76,9 @@ pub fn detect() -> Depth {
 
 #[cfg(target_os = "macos")]
 fn macos_major() -> Option<u32> {
-    let out = std::process::Command::new("sw_vers")
+    let out = crate::probe::quiet("sw_vers")
         .arg("-productVersion")
+        .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
     String::from_utf8_lossy(&out.stdout)
