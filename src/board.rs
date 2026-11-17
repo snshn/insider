@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 const BUILTIN: &[(&str, &str)] = &[
     ("stock-laptop", include_str!("../boards/stock-laptop.toml")),
     ("stock-atx", include_str!("../boards/stock-atx.toml")),
+    (
+        "apple-macbook-air-m3",
+        include_str!("../boards/apple-macbook-air-m3.toml"),
+    ),
 ];
 
 #[derive(Deserialize, Clone, Debug)]
@@ -88,6 +92,10 @@ pub struct BoardDef {
     /// The PCB; peripherals are laid out around it.
     #[serde(default)]
     pub pcb: Option<RectDef>,
+    /// More rectangles merged into the PCB (tabs, wings), for boards that
+    /// aren't a plain rectangle. One outline is drawn around the union.
+    #[serde(default)]
+    pub pcb_extra: Vec<RectDef>,
     /// PCB color, "#rrggbb".
     #[serde(default)]
     pub color: Option<String>,
@@ -135,6 +143,17 @@ impl BoardDef {
                 return Err(format!(
                     "slot {} lies outside the {}x{} board",
                     s.id, self.width, self.height
+                ));
+            }
+        }
+        for (i, r) in self.pcb_extra.iter().enumerate() {
+            if self.pcb.is_none() {
+                return Err("pcb_extra needs a pcb".into());
+            }
+            if r.w == 0 || r.h == 0 || r.x + r.w > self.width || r.y + r.h > self.height {
+                return Err(format!(
+                    "pcb_extra[{i}] lies outside the {}x{} board",
+                    self.width, self.height
                 ));
             }
         }
@@ -398,5 +417,29 @@ mod tests {
         for (id, text) in BUILTIN {
             parse(id, "built-in", text).unwrap();
         }
+    }
+
+    #[test]
+    fn macbook_air_m3_matches_only_its_models() {
+        let (_, text) = BUILTIN
+            .iter()
+            .find(|(id, _)| *id == "apple-macbook-air-m3")
+            .unwrap();
+        let b = parse("apple-macbook-air-m3", "built-in", text).unwrap();
+        let dmi = |model: &str| {
+            [
+                ("sys_vendor", "Apple Inc."),
+                ("board_vendor", "Apple"),
+                ("product_name", "MacBook Air"),
+                ("board_name", model),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+        };
+        assert!(b.score(&dmi("Mac15,12")) > 0);
+        assert!(b.score(&dmi("Mac15,13")) > 0);
+        assert_eq!(b.score(&dmi("Mac15,3")), 0); // M3 MacBook Pro
+        assert_eq!(b.score(&dmi("Mac14,2")), 0); // M2 Air
     }
 }

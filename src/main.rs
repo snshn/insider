@@ -2,6 +2,8 @@
 
 mod board;
 mod color;
+#[cfg(target_os = "macos")]
+mod iokit_temps;
 mod json;
 mod model;
 mod platform;
