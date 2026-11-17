@@ -72,7 +72,7 @@ src/
 ```
 
 There are no other crates. All drawing is done cell by cell into Ratatui's
-`Buffer`. Ratatui widgets are used only for the header, footer, help popup and
+`Buffer`. Ratatui widgets are used only for the help popup and
 detail panel.
 
 ---
@@ -88,7 +88,7 @@ main()
  ├─ thread: loop { sleep(interval); tx.send(prober.gather()) }     default 1000 ms
  └─ event loop (every 60 ms):
       drain rx → App::set_snapshot (re-runs board::assign)
-      terminal.draw(ui::draw_frame)   → scene() + header/footer/details/help
+      terminal.draw(ui::draw_frame)   → scene() + details/help
       poll input → on_key / on_click / on_scroll
 ```
 
@@ -197,6 +197,17 @@ link = "edp"                # peripheral cabled to that slot (normally a `connec
 catchall = true             # soldered area for parts no other slot took
 ```
 
+A slot that lies entirely inside another slot belongs to it, like the GPU on
+an Apple silicon SoC: the outer slot is drawn as a package (substrate and
+outline around the whole rectangle), its own part above the inner slots, and
+the inner slots on top. On the MacBook Air layout the `gpu` slot sits inside
+the `cpu` slot that way.
+
+The keyboard prints the legends of the detected layout (`keymap.rs`: the
+macOS input source, XKB/console keymap on Linux, the preloaded layout ID on
+Windows; QWERTY when unknown) once keys are at least ~2 cells apart, and
+plain keycaps below that.
+
 **Choosing** (`choose`): `--board <file>` (for authoring) → the highest-
 scoring `[[match]]` → `stock-laptop` if `Snapshot::is_laptop()` → `stock-atx`.
 Files whose id (file stem) matches a built-in replace it. `validate()` checks
@@ -248,11 +259,15 @@ connector), or `board`.
 | `q`, Ctrl-C | quit |
 
 ### Frame (`draw_frame`)
-- **Header:** `INSIDER` badge, `sys_vendor product_name`, and a mode badge
-  (SEMI-EXPLODED / EXPLODED).
-- **Body:** `scene()`.
-- **Footer:** key hints, plus a notes counter.
-- **Detail panel:** 46 columns wide, opened by Enter or a click. It is only
+- **No header or footer:** the whole terminal is the scene. The machine name
+  goes in the window title (`window_title()`), key help is under `?`, notes
+  are in the board's details. After each frame the hidden cursor is parked at
+  the top-left, because macOS draws its input-source badge at the cursor.
+- **Body:** `scene()`. The board's name is drawn last (`board_label()`), in
+  the first spot no slot covers, bottom-right first.
+- **Detail panel:** 32 columns wide (`PANEL_W`), entries stacked as key, value,
+  blank line; opened by Enter or a click. A click on empty space acts like Esc.
+  It is only
   scrollable when the wrapped text overflows; `wrapped_rows()` estimates the
   word wrap. The board's panel also lists the notes.
 

@@ -1524,6 +1524,15 @@ fn inputs(inv: &Json, live: &Json) -> Vec<Part> {
         let id = k.get("PNPDeviceID").str().unwrap_or_default();
         let mut p = Part::new("keyboard", Kind::Keyboard, "Built-in keyboard");
         p.tag = "Keyboard".into();
+        let klid = run_quiet(
+            "reg",
+            &["query", r"HKCU\Keyboard Layout\Preload", "/v", "1"],
+        )
+        .and_then(|o| o.split_whitespace().last().map(str::to_string));
+        if let Some(k) = &klid {
+            p.prop("Layout", crate::keymap::windows_klid(k));
+            p.prop("Layout ID", k);
+        }
         p.opt("Name", s(k, "Description").or(s(k, "Name")));
         p.prop(
             "Bus",
