@@ -7,6 +7,7 @@ mod iokit_temps;
 mod json;
 mod keymap;
 mod model;
+mod nl80211;
 mod platform;
 mod probe;
 mod probe_macos;

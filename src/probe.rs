@@ -647,6 +647,9 @@ pub struct Prober {
     prev_cpu: HashMap<String, (u64, u64)>,
     nvidia: HashMap<String, HashMap<String, String>>,
     nvidia_at: Option<Instant>,
+    /// None until first tried; Some(None) if nl80211 isn't available
+    #[cfg(target_os = "linux")]
+    nl80211: Option<Option<crate::nl80211::Nl80211>>,
 }
 
 const NV_FIELDS: [&str; 12] = [
@@ -663,6 +666,38 @@ const NV_FIELDS: [&str; 12] = [
     "fan.speed",
     "driver_version",
 ];
+
+/// Wi-Fi link details from nl80211 onto the part: signal as the headline
+/// metric, the rest as properties.
+fn wifi_props(p: &mut Part, l: &crate::nl80211::Link) {
+    if let Some(s) = l.signal_dbm {
+        p.metric(format!("{s} dBm"));
+        p.prop("Signal", format!("{s} dBm"));
+        // the same 0-70 scale /proc/net/wireless used for cfg80211 drivers
+        p.prop("Link quality", format!("{}/70", (s + 110).clamp(0, 70)));
+    }
+    p.opt("SSID", l.ssid.clone().filter(|s| !s.is_empty()));
+    if let Some(f) = l.freq_mhz {
+        let band = match f {
+            0..=2999 => "2.4 GHz",
+            3000..=5924 => "5 GHz",
+            _ => "6 GHz",
+        };
+        p.prop(
+            "Channel",
+            match crate::nl80211::channel(f) {
+                Some(c) => format!("{c} ({band}, {f} MHz)"),
+                None => format!("{f} MHz"),
+            },
+        );
+    }
+    if let Some(r) = l.tx_mbps {
+        p.prop("TX rate", format!("{r:.0} Mb/s"));
+    }
+    if let Some(r) = l.rx_mbps {
+        p.prop("RX rate", format!("{r:.0} Mb/s"));
+    }
+}
 
 impl Prober {
     pub fn new(opts: Options) -> Self {
@@ -753,6 +788,8 @@ impl Prober {
             prev_cpu: HashMap::new(),
             nvidia: HashMap::new(),
             nvidia_at: None,
+            #[cfg(target_os = "linux")]
+            nl80211: None,
         }
     }
 
@@ -1495,8 +1532,29 @@ impl Prober {
 
     // ------------------------------------------------------------ network
 
+    #[cfg(target_os = "linux")]
+    fn wifi_link(&mut self, ifindex: u32) -> Option<crate::nl80211::Link> {
+        self.nl80211
+            .get_or_insert_with(crate::nl80211::Nl80211::open)
+            .as_mut()
+            .map(|nl| nl.link(ifindex))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn wifi_link(&mut self, _ifindex: u32) -> Option<crate::nl80211::Link> {
+        None
+    }
+
     fn nets(&mut self, hw: &[Hwmon], pci: &[PciDev], claimed: &mut HashSet<String>) -> Vec<Part> {
-        let wl = rd(sp("/proc/net/wireless")).unwrap_or_default();
+        // Live: nl80211. Replaying a capture: its recorded /proc/net/wireless
+        // (reading the real one goes through the deprecated wireless
+        // extensions and makes the kernel log a warning).
+        let live = sysroot().is_empty();
+        let wl = if live {
+            String::new()
+        } else {
+            rd(sp("/proc/net/wireless")).unwrap_or_default()
+        };
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         for n in ls(sp("/sys/class/net")) {
@@ -1541,6 +1599,11 @@ impl Prober {
                 if let Some(sp_) = rdn::<i64>(n.join("speed")).filter(|s| *s > 0) {
                     p.metric(format!("{sp_} Mb/s"));
                     p.prop("Link speed", format!("{sp_} Mb/s"));
+                }
+            } else if live {
+                let ifindex = rdn::<u32>(n.join("ifindex"));
+                if let Some(l) = ifindex.and_then(|i| self.wifi_link(i)) {
+                    wifi_props(&mut p, &l);
                 }
             } else if let Some(line) = wl
                 .lines()
