@@ -146,7 +146,7 @@ optional and called through `run()`.
 | GPU | PCI class 0x03, PCIe link, runtime PM; **if `power/runtime_status` is `suspended`, it is not polled**, so an Optimus dGPU stays asleep; `nvidia-smi` at most every ~5 s when awake (`--no-nvidia-smi` disables it); amdgpu sysfs VRAM/busy |
 | RAM | SMBIOS via `udevadm info --path=/sys/devices/virtual/dmi/id` (`MEMORY_DEVICE_*`, no root), falling back to `dmidecode -t 17`; SPD EEPROMs (`ee1004` DDR4, `spd5118` DDR5, root) give tCK/tAA/tRCD/tRP → CL-RCD-RP at the configured speed; `jc42`/`spd5118` hwmon temps; system memory use (% used) shown on every module |
 | storage | `/sys/class/nvme/*` (+ namespaces in `/sys/block`, throughput, `nvme` hwmon), SATA `sd*` that are not on USB (`drivetemp`) |
-| network | `/sys/class/net/*` with a real device, not USB; Wi-Fi via `wireless/`/`phy80211`, `/proc/net/wireless` signal, rx/tx rates, `iwlwifi` hwmon temp |
+| network | `/sys/class/net/*` with a real device, not USB; Wi-Fi via `wireless/`/`phy80211`, nl80211 (`nl80211.rs`: SSID, channel, signal, link rates; a replayed capture uses its `/proc/net/wireless`), rx/tx rates, `iwlwifi` hwmon temp |
 | chipset | ISA bridge on bus 00 + `pch_*` hwmon/thermal zone; other unclaimed bus-00 devices listed as integrated functions |
 | BIOS | DMI; title "UEFI BIOS <ver>" when `/sys/firmware/efi` exists; Secure Boot from efivars |
 | battery | `/sys/class/power_supply` type Battery, scope not Device: charge, voltage, power, Wh/Ah, health, cycles, time to empty/full, AC state |
