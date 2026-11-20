@@ -14,7 +14,7 @@ generic = true
 width = 160
 height = 50
 color = "#123524"
-pcb = { x = 68, y = 10, w = 92, h = 26 }
+pcb = { x = 68, y = 10, w = 92, h = 28 }
 
 # A real layout would add one or more [[match]] tables, e.g.
 # [[match]]
@@ -38,7 +38,7 @@ id = "mic"
 kind = "microphone"
 x = 39
 y = 0
-w = 4
+w = 6
 h = 2
 link = "camc"
 label = "Mic"
@@ -76,7 +76,7 @@ y = 36
 w = 15
 h = 6
 link = "spkc"
-label = "Speaker L"
+label = "Speaker (left)"
 
 [[slot]]
 id = "touchpad"
@@ -97,7 +97,7 @@ y = 36
 w = 15
 h = 6
 link = "spkc"
-label = "Speaker R"
+label = "Speaker (right)"
 
 [[slot]]
 id = "bat0"
@@ -209,7 +209,7 @@ label = "FAN"
 id = "batc"
 kind = "connector"
 x = 80
-y = 33
+y = 35
 w = 6
 h = 2
 soldered = true
@@ -221,7 +221,7 @@ kind = "cpu"
 x = 78
 y = 14
 w = 23
-h = 10
+h = 13
 soldered = true
 label = "CPU"
 
@@ -231,7 +231,7 @@ kind = "gpu"
 x = 104
 y = 14
 w = 23
-h = 10
+h = 13
 soldered = true
 label = "GPU"
 
@@ -260,7 +260,7 @@ id = "chips"
 kind = "pci"
 x = 143
 y = 12
-w = 12
+w = 13
 h = 9
 soldered = true
 catchall = true
@@ -270,7 +270,7 @@ label = ""
 id = "ssd0"
 kind = "ssd"
 x = 78
-y = 25
+y = 27
 w = 21
 h = 3
 edge = "left"
@@ -280,7 +280,7 @@ label = "M.2 SSD 1"
 id = "ssd1"
 kind = "ssd"
 x = 78
-y = 29
+y = 31
 w = 21
 h = 3
 edge = "left"
@@ -290,7 +290,7 @@ label = "M.2 SSD 2"
 id = "dimm0"
 kind = "dimm"
 x = 101
-y = 25
+y = 27
 w = 23
 h = 5
 edge = "bottom"
@@ -300,7 +300,7 @@ label = "SODIMM A"
 id = "dimm1"
 kind = "dimm"
 x = 101
-y = 30
+y = 32
 w = 23
 h = 5
 edge = "bottom"
@@ -309,9 +309,9 @@ label = "SODIMM B"
 [[slot]]
 id = "wifi"
 kind = "wifi"
-x = 127
-y = 25
-w = 12
+x = 126
+y = 27
+w = 15
 h = 4
 edge = "left"
 label = "M.2 Wi-Fi"
@@ -319,9 +319,9 @@ label = "M.2 Wi-Fi"
 [[slot]]
 id = "lan"
 kind = "ethernet"
-x = 127
-y = 30
-w = 12
+x = 126
+y = 32
+w = 15
 h = 3
 soldered = true
 label = "LAN"
@@ -330,7 +330,7 @@ label = "LAN"
 id = "usbint"
 kind = "usb-internal"
 x = 142
-y = 25
+y = 27
 w = 10
 h = 3
 multi = true
@@ -367,14 +367,14 @@ label = "USB"
 id = "usb3"
 kind = "usb"
 x = 157
-y = 29
+y = 31
 w = 3
 h = 2
 label = "USB-C"
 
 # ---------------------------------------------------------------- power
 
-# The power adapter brick, cabled to the DC-IN jack when plugged in. A layout
+# The power source brick, cabled to the DC-IN jack when plugged in. A layout
 # that knows the adapter can say so, e.g. props = { Output = "19.5 V ⎓ 3.33 A" }.
 [[slot]]
 id = "adapter"
@@ -384,15 +384,29 @@ y = 40
 w = 30
 h = 8
 link = "dcin"
-label = "Power adapter"
+label = "Power source"
 props = { Unit = "adapter" }
 
 [[slot]]
 id = "dcin"
 kind = "connector"
 x = 146
-y = 33
+y = 35
 w = 7
 h = 2
 soldered = true
 label = "DC-IN"
+
+# The CPU's integrated graphics, inside the CPU package (a slot inside
+# another slot makes the outer one a package). Bound to "integrated", so the
+# discrete GPU still goes to the GPU slot.
+[[slot]]
+id = "igpu"
+kind = "gpu"
+x = 79
+y = 23
+w = 21
+h = 3
+soldered = true
+bind = ["integrated"]
+label = "iGPU"

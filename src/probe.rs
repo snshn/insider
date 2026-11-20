@@ -153,7 +153,39 @@ pub(crate) fn replay(cmd: &str, args: &[&str]) -> Option<String> {
 /// process group. Terminals such as Terminal.app name the tty's foreground
 /// process in the window title; outside the foreground group, `ioreg`,
 /// `system_profiler` & co. don't flash up there while insider samples.
-/// What the OS says about the power adapter, when it says anything.
+/// The CPU's integrated graphics as a GPU part of its own, from what the
+/// CPU part found ("Integrated GPU", "iGPU …" properties). Bound to
+/// "integrated" so a layout can put it inside the CPU package; it comes
+/// after the discrete GPUs, so a layout with one GPU slot still gets those.
+pub(crate) fn igpu_part(parts: &[Part]) -> Option<Part> {
+    let cpu = parts.iter().find(|p| p.kind == Kind::Cpu)?;
+    let get = |k: &str| {
+        cpu.props
+            .iter()
+            .find(|(a, _)| a == k)
+            .map(|(_, v)| v.clone())
+    };
+    let name = get("Integrated GPU")?;
+    let addr = get("iGPU PCI address");
+    let mut p = Part::new(
+        format!("igpu:{}", addr.clone().unwrap_or_default()),
+        Kind::Gpu,
+        name,
+    );
+    p.tag = "iGPU".into();
+    p.bind = vec!["integrated".into()];
+    p.bind.extend(addr.clone());
+    p.prop("Type", "integrated (in the CPU package)");
+    p.opt("PCI address", addr);
+    p.opt("Driver", get("iGPU driver"));
+    if let Some(c) = get("iGPU clock") {
+        p.metric(c.split(" (").next().unwrap_or(&c).to_string());
+        p.prop("Clock", c);
+    }
+    Some(p)
+}
+
+/// What the OS says about the power source, when it says anything.
 #[derive(Default, Debug)]
 pub(crate) struct Adapter {
     pub name: Option<String>,
@@ -163,12 +195,12 @@ pub(crate) struct Adapter {
     pub watts: Option<f64>,
 }
 
-/// The power input part: a power adapter or a PSU, plugged in or not.
+/// The power input part: a power source or a PSU, plugged in or not.
 ///
 /// An adapter when there is a battery, the chassis is portable or a mini
 /// PC, or it is a device-tree board (Raspberry Pi & co., `dev_board`); a
 /// PSU otherwise. A layout's `Unit` prop overrides this when drawing.
-/// Plugged-in state comes from the batteries' "Power adapter" property; with
+/// Plugged-in state comes from the batteries' "Power source" property; with
 /// no battery the machine is running, so it is powered.
 pub(crate) fn power_part(
     dmi: &HashMap<String, String>,
@@ -183,7 +215,7 @@ pub(crate) fn power_part(
     let ac = bats.iter().find_map(|p| {
         p.props
             .iter()
-            .find(|(k, _)| k == "Power adapter")
+            .find(|(k, _)| k == "Power source")
             .map(|(_, v)| v == "connected")
     });
     let chassis = dmi.get("chassis_type").and_then(|s| s.parse::<u32>().ok());
@@ -194,7 +226,7 @@ pub(crate) fn power_part(
         || a.volts.is_some();
     let online = if bats.is_empty() { Some(true) } else { ac };
     let (title, tag) = if adapter {
-        ("Power adapter", "Adapter")
+        ("Power source", "Adapter")
     } else {
         ("Power supply", "PSU")
     };
@@ -360,7 +392,8 @@ struct Hwmon {
     /// Canonical path of the device it belongs to.
     dev: Option<PathBuf>,
     temps: Vec<(String, f64)>,
-    fans: Vec<(String, u32)>,
+    /// (label, RPM, PWM duty 0..1 from the matching pwmN when there is one)
+    fans: Vec<(String, u32, Option<f64>)>,
 }
 
 fn scan_hwmon() -> Vec<Hwmon> {
@@ -389,7 +422,9 @@ fn scan_hwmon() -> Vec<Hwmon> {
                     if let Some(v) = rdn::<u32>(&f) {
                         let label = rd(p.join(format!("fan{idx}_label")))
                             .unwrap_or_else(|| format!("fan{idx}"));
-                        fans.push((label, v));
+                        let pwm = rdn::<f64>(p.join(format!("pwm{idx}")))
+                            .map(|d| (d / 255.0).clamp(0.0, 1.0));
+                        fans.push((label, v, pwm));
                     }
                 }
             }
@@ -761,6 +796,12 @@ pub struct Prober {
     spd: Vec<Spd>,
     notes: Vec<String>,
     rates: crate::probe::Rates,
+    /// NVML (None until tried) and the CUDA core counts it gave, per GPU
+    #[cfg(target_os = "linux")]
+    nvml: Option<Option<crate::nvml::Nvml>>,
+    cuda: HashMap<String, Option<u32>>,
+    /// `df` results by whole disk, refreshed every few seconds
+    df: Option<(Instant, HashMap<String, (f64, f64)>)>,
     prev_cpu: HashMap<String, (u64, u64)>,
     nvidia: HashMap<String, HashMap<String, String>>,
     nvidia_at: Option<Instant>,
@@ -769,7 +810,7 @@ pub struct Prober {
     nl80211: Option<Option<crate::nl80211::Nl80211>>,
 }
 
-const NV_FIELDS: [&str; 12] = [
+const NV_FIELDS: [&str; 14] = [
     "pci.bus_id",
     "name",
     "temperature.gpu",
@@ -782,6 +823,8 @@ const NV_FIELDS: [&str; 12] = [
     "pstate",
     "fan.speed",
     "driver_version",
+    "clocks.sm",
+    "clocks.max.sm",
 ];
 
 /// Wi-Fi link details from nl80211 onto the part: signal as the headline
@@ -810,6 +853,11 @@ fn wifi_props(p: &mut Part, l: &crate::nl80211::Link) {
     }
     if let Some(r) = l.tx_mbps {
         p.prop("TX rate", format!("{r:.0} Mb/s"));
+    }
+    // receive and send link rates bound the bars; one stands in for the other
+    let (rx, tx) = (l.rx_mbps.or(l.tx_mbps), l.tx_mbps.or(l.rx_mbps));
+    if let (Some(rx), Some(tx)) = (rx.filter(|r| *r > 0.0), tx.filter(|r| *r > 0.0)) {
+        p.io_max = Some((rx * 1e6 / 8.0, tx * 1e6 / 8.0));
     }
     if let Some(r) = l.rx_mbps {
         p.prop("RX rate", format!("{r:.0} Mb/s"));
@@ -902,6 +950,10 @@ impl Prober {
             spd,
             notes,
             rates: Default::default(),
+            df: None,
+            #[cfg(target_os = "linux")]
+            nvml: None,
+            cuda: HashMap::new(),
             prev_cpu: HashMap::new(),
             nvidia: HashMap::new(),
             nvidia_at: None,
@@ -958,6 +1010,7 @@ impl Prober {
         parts.push(self.board(&dmi, &tz));
         parts.extend(self.cpus(&hw, &tz, &pci, &mut claimed));
         parts.extend(self.gpus(&hw, &pci, &mut claimed));
+        parts.extend(igpu_part(&parts));
         parts.extend(self.dimms(&hw));
         parts.extend(self.disks(&hw, &mut claimed));
         parts.extend(self.nets(&hw, &pci, &mut claimed));
@@ -1189,7 +1242,7 @@ impl Prober {
                 rd(cpufreq0.join("energy_performance_preference")),
             );
             if let Some(u) = util {
-                p.metric(format!("{u:.0}% load"));
+                p.load = Some(u / 100.0); // drawn as a bar
                 p.prop("Utilization", format!("{u:.1}%"));
             }
 
@@ -1334,6 +1387,12 @@ impl Prober {
                 let key = slot_suffix(&d.slot);
                 if let Some(nv) = self.nvidia.get(&key) {
                     nvidia_props(&mut p, nv);
+                    // CUDA cores: asked once per GPU, and only while it's
+                    // awake (nvidia-smi has just run, so it is)
+                    if let Some(c) = self.cuda_cores(&d.slot) {
+                        p.metric(format!("{c} CUDA cores"));
+                        p.prop("CUDA cores", c);
+                    }
                 } else if !self.opts.nvidia_smi {
                     p.prop("Note", "nvidia-smi polling disabled (--no-nvidia-smi)");
                 }
@@ -1351,9 +1410,11 @@ impl Prober {
                     rdn::<u64>(d.path.join("mem_info_vram_total")),
                 ) {
                     p.prop("VRAM", format!("{} / {}", fmt_bin(u), fmt_bin(t)));
+                    p.usage = Some((u as f64, t as f64));
                 }
                 if let Some(b) = rdn::<f64>(d.path.join("gpu_busy_percent")) {
-                    p.metric(format!("{b:.0}%"));
+                    p.load = Some(b / 100.0);
+                    p.prop("Utilization", format!("{b:.0}%"));
                 }
             }
             out.push(p);
@@ -1445,11 +1506,23 @@ impl Prober {
             let speed = m.cfg_speed.or(m.speed);
             if let Some((used, total)) = mem_use {
                 let pct = 100.0 * used as f64 / total.max(1) as f64;
-                p.metric(format!("{pct:.0}% used"));
+                p.usage = Some((used as f64, total as f64)); // system-wide, drawn as bars
+                                                             // what's installed (32 GB), not what the OS can use (30.x GiB)
+                let installed: u64 = self
+                    .mem
+                    .iter()
+                    .filter(|m| m.present)
+                    .filter_map(|m| m.size)
+                    .sum();
+                p.capacity = (installed > 0).then_some(installed as f64);
                 p.prop(
                     "System RAM in use",
                     format!("{} of {} ({pct:.0}%)", fmt_bin(used), fmt_bin(total)),
                 );
+            }
+            // configured vs. what the module is rated for: a slow-RAM hint
+            if let (Some(c), Some(r)) = (m.cfg_speed, m.speed) {
+                p.speed = Some((c as f64, r.max(c) as f64));
             }
             p.opt("Size", size);
             p.opt(
@@ -1503,6 +1576,55 @@ impl Prober {
 
     /// Read/write bytes per second of a block device, from its `stat` file
     /// (fields 3 and 7 count 512-byte sectors).
+    /// Space (used, total) per whole disk, from `df` (local filesystems),
+    /// followed through partitions, LVM/LUKS (dm) and md to the disks.
+    /// Cached for 5 s; nothing when replaying a capture.
+    /// CUDA cores of the NVIDIA GPU at `slot`, from NVML; cached for good
+    /// (it doesn't change), and never asked when replaying a capture.
+    fn cuda_cores(&mut self, slot: &str) -> Option<u32> {
+        if !sysroot().is_empty() {
+            return None;
+        }
+        if let Some(c) = self.cuda.get(slot) {
+            return *c;
+        }
+        #[cfg(target_os = "linux")]
+        let c = self
+            .nvml
+            .get_or_insert_with(crate::nvml::Nvml::open)
+            .as_ref()
+            .and_then(|n| n.cuda_cores(slot));
+        #[cfg(not(target_os = "linux"))]
+        let c = None;
+        self.cuda.insert(slot.to_string(), c);
+        c
+    }
+
+    fn disk_usage(&mut self) -> HashMap<String, (f64, f64)> {
+        if let Some((t, m)) = &self.df {
+            if t.elapsed().as_secs() < 5 {
+                return m.clone();
+            }
+        }
+        let m = if sysroot().is_empty() {
+            run("df", &["-P", "-B1", "-l"])
+                .map(|o| {
+                    parse_df(&o, |dev| {
+                        let real = fs::canonicalize(dev)
+                            .ok()
+                            .map(|p| fname(&p))
+                            .unwrap_or_else(|| dev.trim_start_matches("/dev/").to_string());
+                        base_disks(&real, 0)
+                    })
+                })
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        self.df = Some((Instant::now(), m.clone()));
+        m
+    }
+
     fn block_io(&mut self, b: &Path) -> Option<(f64, f64)> {
         let bn = fname(b);
         let st = rd(b.join("stat"))?;
@@ -1546,15 +1668,24 @@ impl Prober {
                     let w = rd(dev.join("current_link_width"));
                     if let (Some(s), Some(w)) = (s, w) {
                         p.prop("PCIe link", format!("{s} x{w}"));
+                        if let (Some(g), Ok(l)) = (leading_num(&s), w.trim().parse::<f64>()) {
+                            let b = pcie_bytes(g, l);
+                            p.io_max = Some((b, b));
+                        }
                     }
                 }
             }
             let mut size = 0u64;
             let (mut rs, mut ws, mut have_rate) = (0.0, 0.0, false);
+            let df = self.disk_usage();
             for b in &blocks {
                 let bn = fname(b);
                 if !bn.starts_with(&format!("{n}n")) {
                     continue;
+                }
+                if let Some((u, t)) = df.get(&bn) {
+                    let (u0, t0) = p.usage.unwrap_or_default();
+                    p.usage = Some((u0 + u, t0 + t));
                 }
                 size += rdn::<u64>(b.join("size")).unwrap_or(0) * 512;
                 if let Some((r, w)) = self.block_io(b) {
@@ -1565,6 +1696,7 @@ impl Prober {
                 p.prop("Namespace", &bn);
             }
             if size > 0 {
+                p.capacity = Some(size as f64);
                 p.tag = format!("NVMe {}", fmt_dec(size));
                 p.metric(fmt_dec(size));
                 p.prop("Capacity", fmt_dec(size));
@@ -1617,6 +1749,13 @@ impl Prober {
             if let Some(ata) = cp.split('/').find(|s| s.starts_with("ata")) {
                 p.bind.push(ata.to_string());
                 p.prop("Port", ata);
+                // negotiated link: /sys/class/ata_link/linkN/sata_spd, "6.0 Gbps"
+                let link = sp("/sys/class/ata_link").join(format!("link{}", &ata[3..]));
+                if let Some(g) = rd(link.join("sata_spd")).and_then(|s| leading_num(&s)) {
+                    p.prop("SATA link", format!("{g} Gb/s"));
+                    let b = serial_bytes(g * 1e9);
+                    p.io_max = Some((b, b));
+                }
             }
             p.metric(fmt_dec(size));
             p.prop("Device", format!("/dev/{bn}"));
@@ -1633,6 +1772,8 @@ impl Prober {
             if let Some((r, w)) = self.block_io(b) {
                 throughput(&mut p, r, w);
             }
+            p.usage = self.disk_usage().get(&bn).copied();
+            p.capacity = (size > 0).then_some(size as f64);
             let bdev = canon(b.join("device"));
             if let Some(h) = hw
                 .iter()
@@ -1707,7 +1848,8 @@ impl Prober {
             let speed = rdn::<i64>(n.join("speed")).filter(|s| *s > 0);
             p.link = Some((state.as_deref() == Some("up"), speed.unwrap_or(0) as u32));
             p.opt("MTU", rd(n.join("mtu")));
-            if let Some(s) = state {
+            // the link state shows on the chip only when it isn't up
+            if let Some(s) = state.filter(|s| s != "up") {
                 p.metric(s);
             }
             if !wireless {
@@ -1742,7 +1884,6 @@ impl Prober {
                     self.rate(&format!("{ifn}:tx"), tx),
                 ) {
                     p.io = Some((r, t));
-                    p.metric(format!("↓{} ↑{}", fmt_rate(r), fmt_rate(t)));
                     p.prop(
                         "Traffic",
                         format!("down {}  up {}", fmt_rate(r), fmt_rate(t)),
@@ -1941,7 +2082,7 @@ impl Prober {
             p.opt("Manufacturer", clean(rd(b.join("manufacturer"))));
             p.opt("Model", clean(rd(b.join("model_name"))));
             if let Some(a) = ac {
-                p.prop("Power adapter", if a { "connected" } else { "unplugged" });
+                p.prop("Power source", if a { "connected" } else { "unplugged" });
             }
             out.push(p);
         }
@@ -2096,14 +2237,24 @@ impl Prober {
                             p.metric(fmt_dec(size));
                         }
                         p.prop(&format!("Disk /dev/{bn}"), fmt_dec(size));
+                        p.capacity = Some(p.capacity.unwrap_or(0.0) + size as f64);
                         if let Some((r, w)) = self.block_io(b) {
                             let (r0, w0) = io.unwrap_or((0.0, 0.0));
                             io = Some((r0 + r, w0 + w));
+                        }
+                        if let Some((u, t)) = self.disk_usage().get(&bn).copied() {
+                            let (u0, t0) = p.usage.unwrap_or_default();
+                            p.usage = Some((u0 + u, t0 + t));
                         }
                     }
                 }
                 if let Some((r, w)) = io {
                     throughput(&mut p, r, w);
+                    // the bus speed (Mb/s) bounds the bars
+                    if let Ok(mbps) = speed.trim().parse::<f64>() {
+                        let b = serial_bytes(mbps * 1e6);
+                        p.io_max = Some((b, b));
+                    }
                 }
             }
             out.push(p);
@@ -2225,8 +2376,7 @@ pub(crate) fn panel_vendor(id: &str) -> &str {
 
 /// Drive throughput: shown, and kept for the activity LED.
 pub(crate) fn throughput(p: &mut Part, r: f64, w: f64) {
-    p.io = Some((r, w));
-    p.metric(format!("R {} W {}", fmt_rate(r), fmt_rate(w)));
+    p.io = Some((r, w)); // drawn as read/write bars and the activity LED
     p.prop(
         "Throughput",
         format!("read {}  write {}", fmt_rate(r), fmt_rate(w)),
@@ -2549,33 +2699,58 @@ fn inputs(dmi: &HashMap<String, String>) -> (Vec<Part>, HashSet<String>) {
 // ---------------------------------------------------------------- speakers & microphone
 
 /// "45%" / "muted" from wpctl (PipeWire) or amixer (ALSA).
+/// The sound card's own level for a mixer control: (percent, switched off).
+fn alsa_level(ctl: &str) -> Option<(f64, bool)> {
+    let o = run("amixer", &["-c", "0", "sget", ctl])?;
+    let l = o.lines().find(|l| l.contains('%'))?;
+    let pct = l
+        .split('[')
+        .nth(1)?
+        .split(']')
+        .next()?
+        .trim_end_matches('%')
+        .parse()
+        .ok()?;
+    Some((pct, l.contains("[off]")))
+}
+
+/// Output (speakers) or input (microphone) level, "40%" or "muted".
+///
+/// PipeWire's volume (`wpctl`) and the card's mixer (`amixer`, what
+/// `alsamixer` changes) are separate: for the microphone the signal goes
+/// through both, so the level is their product, and muted if either is.
+/// For speakers PipeWire drives the card's Master itself, so its volume
+/// alone counts.
 fn volume(source: bool) -> Option<String> {
     let target = if source {
         "@DEFAULT_AUDIO_SOURCE@"
     } else {
         "@DEFAULT_AUDIO_SINK@"
     };
-    if let Some(o) = run("wpctl", &["get-volume", target]) {
-        let v = o
-            .split_whitespace()
-            .nth(1)
-            .and_then(|v| v.parse::<f64>().ok());
-        if let Some(v) = v {
-            return Some(if o.contains("MUTED") {
-                "muted".into()
-            } else {
-                format!("{:.0}%", v * 100.0)
-            });
-        }
-    }
-    let ctl = if source { "Capture" } else { "Master" };
-    let o = run("amixer", &["-c", "0", "sget", ctl])?;
-    let l = o.lines().find(|l| l.contains('%'))?;
-    let pct = l.split('[').nth(1)?.split(']').next()?.to_string();
-    Some(if l.contains("[off]") {
+    let pw = run("wpctl", &["get-volume", target]).and_then(|o| {
+        let v = o.split_whitespace().nth(1)?.parse::<f64>().ok()?;
+        Some((v * 100.0, o.contains("MUTED")))
+    });
+    let card = if source {
+        // the capture level, and an "Internal Mic" control where the codec has one
+        ["Capture", "Internal Mic"]
+            .iter()
+            .filter_map(|c| alsa_level(c))
+            .reduce(|a, b| (a.0.min(b.0), a.1 || b.1))
+    } else if pw.is_none() {
+        alsa_level("Master")
+    } else {
+        None
+    };
+    let (pct, muted) = match (pw, card) {
+        (Some((p, m)), Some((c, off))) => (p * c / 100.0, m || off),
+        (Some(v), None) | (None, Some(v)) => v,
+        (None, None) => return None,
+    };
+    Some(if muted {
         "muted".into()
     } else {
-        pct
+        format!("{pct:.0}%")
     })
 }
 
@@ -2664,15 +2839,24 @@ pub(crate) fn nvidia_props(p: &mut Part, nv: &HashMap<String, String>) {
         p.metric(format!("{c} MHz"));
         p.prop("Core clock", format!("{c} MHz"));
     }
+    // the shader (CUDA core) clock against its maximum, drawn as a bar
+    let num = |k: &str| {
+        f(k).and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| *v > 0.0)
+    };
+    if let (Some(c), Some(m)) = (num("clocks.sm"), num("clocks.max.sm")) {
+        p.speed = Some((c, m.max(c)));
+        p.prop("SM clock", format!("{c:.0} MHz (max {m:.0})"));
+    }
     if let Some(u) = f("utilization.gpu") {
-        p.metric(format!("{u}%"));
+        p.load = u.parse::<f64>().ok().map(|u| u / 100.0);
         p.prop("Utilization", format!("{u}%"));
     }
     if let (Some(u), Some(t)) = (
         f("memory.used").and_then(|v| v.parse::<f64>().ok()),
         f("memory.total").and_then(|v| v.parse::<f64>().ok()),
     ) {
-        p.metric(format!("{:.1}/{:.0}G", u / 1024.0, t / 1024.0));
+        p.usage = Some((u * 1048576.0, t * 1048576.0));
         p.prop("VRAM", format!("{u:.0} / {t:.0} MiB"));
     }
     if let Some(w) = f("power.draw").and_then(|v| v.parse::<f64>().ok()) {
@@ -2810,10 +2994,67 @@ fn usb_pd_adapter() -> Adapter {
     Adapter::default()
 }
 
+/// `df -P -B1` output → (used, total) per whole disk. Each filesystem counts
+/// once (bind mounts, btrfs subvolumes); one spread over several disks is
+/// split evenly between them.
+fn parse_df(o: &str, disks_of: impl Fn(&str) -> Vec<String>) -> HashMap<String, (f64, f64)> {
+    let mut seen = HashSet::new();
+    let mut m: HashMap<String, (f64, f64)> = HashMap::new();
+    for l in o.lines().skip(1) {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() < 6 || !f[0].starts_with("/dev/") || !seen.insert(f[0]) {
+            continue;
+        }
+        let (Ok(size), Ok(used)) = (f[1].parse::<f64>(), f[2].parse::<f64>()) else {
+            continue;
+        };
+        let disks = disks_of(f[0]);
+        let n = disks.len().max(1) as f64;
+        for d in disks {
+            let e = m.entry(d).or_default();
+            e.0 += used / n;
+            e.1 += size / n;
+        }
+    }
+    m
+}
+
+/// The whole disks under a block device: itself, a partition's parent, or
+/// (dm/md) whatever its slaves sit on.
+fn base_disks(name: &str, depth: u8) -> Vec<String> {
+    let c = sp("/sys/class/block").join(name);
+    if depth < 8 {
+        let slaves = ls(c.join("slaves"));
+        if !slaves.is_empty() {
+            return slaves
+                .iter()
+                .flat_map(|s| base_disks(&fname(s), depth + 1))
+                .collect();
+        }
+    }
+    if c.join("partition").exists() {
+        if let Some(parent) = canon(&c).and_then(|p| p.parent().map(fname)) {
+            return vec![parent];
+        }
+    }
+    vec![name.to_string()]
+}
+
+/// Usable bytes/s of a link: PCIe "16.0 GT/s" x lanes (8b/10b up to 5 GT/s,
+/// 128b/130b above), or a serial "6.0 Gbps" / USB Mb/s with 8b/10b.
+fn pcie_bytes(gts: f64, lanes: f64) -> f64 {
+    let enc = if gts <= 5.0 { 0.8 } else { 128.0 / 130.0 };
+    gts * 1e9 * enc * lanes / 8.0
+}
+
+fn serial_bytes(bits_per_s: f64) -> f64 {
+    bits_per_s * 0.8 / 8.0
+}
+
 fn fans(hw: &[Hwmon]) -> Vec<Part> {
     let mut out = Vec::new();
     for h in hw {
-        for (i, (label, rpm)) in h.fans.iter().enumerate() {
+        for (i, (label, rpm, pwm)) in h.fans.iter().enumerate() {
             let title = if label.starts_with("fan") {
                 format!("Fan {} ({})", i + 1, h.name)
             } else {
@@ -2822,8 +3063,12 @@ fn fans(hw: &[Hwmon]) -> Vec<Part> {
             let mut p = Part::new(format!("fan:{}:{i}", h.id), Kind::Fan, title);
             p.tag = "Fan".into();
             p.rpm = Some(*rpm);
+            p.pwm = *pwm;
             p.metric(format!("{rpm} RPM"));
             p.prop("Speed", format!("{rpm} RPM"));
+            if let Some(d) = pwm {
+                p.prop("PWM duty", format!("{:.0}%", d * 100.0));
+            }
             p.prop("Sensor", format!("{} ({})", h.name, h.id));
             out.push(p);
         }
@@ -2913,6 +3158,48 @@ pub(crate) fn usb_speed(s: &str) -> (String, String) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn igpu_becomes_its_own_part() {
+        let mut cpu = Part::new("cpu0", Kind::Cpu, "Intel Core i7-9750H");
+        cpu.prop("Integrated GPU", "Intel UHD Graphics 630");
+        cpu.prop("iGPU PCI address", "0000:00:02.0");
+        cpu.prop("iGPU clock", "350 MHz (max 1150)");
+        let g = igpu_part(&[cpu]).unwrap();
+        assert_eq!(
+            (g.kind, g.title.as_str()),
+            (Kind::Gpu, "Intel UHD Graphics 630")
+        );
+        assert_eq!(g.bind, ["integrated", "0000:00:02.0"]);
+        assert_eq!(g.metrics, ["350 MHz"]);
+        assert!(igpu_part(&[Part::new("cpu0", Kind::Cpu, "AMD")]).is_none());
+    }
+
+    #[test]
+    fn df_maps_filesystems_to_disks() {
+        let out = "Filesystem 1-blocks Used Available Capacity Mounted on
+tmpfs 100 1 99 1% /run
+/dev/nvme0n1p2 1000 400 600 40% /
+/dev/nvme0n1p2 1000 400 600 40% /var/lib/docker
+/dev/mapper/vg-home 3000 1500 1500 50% /home
+/dev/sda1 500 100 400 20% /data
+";
+        let m = parse_df(out, |dev| match dev {
+            "/dev/nvme0n1p2" => vec!["nvme0n1".into()],
+            // a logical volume spread over two disks
+            "/dev/mapper/vg-home" => vec!["nvme0n1".into(), "sda".into()],
+            _ => vec!["sda".into()],
+        });
+        assert_eq!(m["nvme0n1"], (400.0 + 750.0, 1000.0 + 1500.0));
+        assert_eq!(m["sda"], (100.0 + 750.0, 500.0 + 1500.0));
+    }
+
+    #[test]
+    fn link_bandwidth() {
+        // PCIe 4.0 x4 is about 7.88 GB/s; SATA 6 Gb/s is 600 MB/s
+        assert!((pcie_bytes(16.0, 4.0) - 7.877e9).abs() < 1e7);
+        assert_eq!(serial_bytes(6e9), 600e6);
+    }
+
     fn power_for(chassis: Option<&str>, battery_ac: Option<&str>, dev_board: bool) -> Part {
         let mut dmi = HashMap::new();
         if let Some(c) = chassis {
@@ -2921,7 +3208,7 @@ mod tests {
         let mut parts = Vec::new();
         if let Some(ac) = battery_ac {
             let mut b = Part::new("bat", Kind::Battery, "Battery");
-            b.prop("Power adapter", ac);
+            b.prop("Power source", ac);
             parts.push(b);
         }
         power_part(&dmi, &parts, dev_board, Adapter::default())
@@ -2935,15 +3222,12 @@ mod tests {
         assert_eq!((unit(&p).as_str(), p.online), ("Power supply", Some(true)));
         // laptop on battery
         let p = power_for(Some("10"), Some("unplugged"), false);
-        assert_eq!(
-            (unit(&p).as_str(), p.online),
-            ("Power adapter", Some(false))
-        );
+        assert_eq!((unit(&p).as_str(), p.online), ("Power source", Some(false)));
         assert_eq!(p.metrics, ["unplugged"]);
         // laptop with its battery removed, mini PC, Raspberry Pi: adapters
-        assert_eq!(unit(&power_for(Some("10"), None, false)), "Power adapter");
-        assert_eq!(unit(&power_for(Some("35"), None, false)), "Power adapter");
-        assert_eq!(unit(&power_for(None, None, true)), "Power adapter");
+        assert_eq!(unit(&power_for(Some("10"), None, false)), "Power source");
+        assert_eq!(unit(&power_for(Some("35"), None, false)), "Power source");
+        assert_eq!(unit(&power_for(None, None, true)), "Power source");
         // no DMI, no device tree (VMs): a PSU
         assert_eq!(unit(&power_for(None, None, false)), "Power supply");
     }

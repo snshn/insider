@@ -499,7 +499,8 @@ fn edid_vendor(id: u32) -> String {
 
 // ---------------------------------------------------------------- slow inventory
 
-const SP_FAST: [&str; 13] = [
+const SP_FAST: [&str; 14] = [
+    "SPStorageDataType",
     "SPHardwareDataType",
     "SPMemoryDataType",
     "SPNVMeDataType",
@@ -939,7 +940,7 @@ impl Prober {
         if let Some(o) = run("ps", &["-A", "-o", "%cpu="]) {
             let sum: f64 = o.lines().filter_map(|l| l.trim().parse::<f64>().ok()).sum();
             let u = (sum / logical.max(1) as f64).clamp(0.0, 100.0);
-            p.metric(format!("{u:.0}% load"));
+            p.load = Some(u / 100.0); // drawn as a bar
             p.prop("Utilization", format!("{u:.1}%"));
         }
         if let Some(w) = pm.pkg_w.or(pm.cpu_w) {
@@ -1076,7 +1077,7 @@ impl Prober {
             if let Some(a) = accel_for(&name, accels) {
                 let f = |k: &str| io_inline(a, k).and_then(|v| io_num(&v));
                 if let Some(u) = f("Device Utilization %").or_else(|| f("GPU Activity(%)")) {
-                    p.metric(format!("{u:.0}%"));
+                    p.load = Some(u / 100.0);
                     p.prop("Utilization", format!("{u:.0}%"));
                 }
                 if let Some(c) = f("Core Clock(MHz)") {
@@ -1094,6 +1095,15 @@ impl Prober {
                 p.opt("Fan", f("Fan Speed(%)").map(|c| format!("{c:.0}%")));
                 if let Some(b) = f("vramUsedBytes") {
                     p.prop("VRAM in use", fmt_bin(b as u64));
+                    // discrete GPUs: "8 GB" of VRAM to measure it against
+                    let total = p
+                        .props
+                        .iter()
+                        .find(|(k, _)| k == "VRAM")
+                        .and_then(|(_, v)| size_text(v));
+                    if let Some(t) = total.filter(|t| *t > 0.0) {
+                        p.usage = Some((b, t));
+                    }
                 }
                 p.temp = f("Temperature(C)").filter(|t| *t > 0.0);
                 if p.temp.is_none() {
@@ -1206,8 +1216,21 @@ impl Prober {
                 (sps(d, &["spnvme_linkspeed"]), sps(d, &["spnvme_linkwidth"]))
             {
                 p.prop("PCIe link", format!("{s} {w}"));
+                // "8.0 GT/s", "x4"
+                if let (Some(g), Some(l)) =
+                    (leading_num(&s), leading_num(w.trim_start_matches('x')))
+                {
+                    let enc = if g <= 5.0 { 0.8 } else { 128.0 / 130.0 };
+                    let b = g * 1e9 * enc * l / 8.0;
+                    p.io_max = Some((b, b));
+                }
             }
-            p.opt("Link", sps(d, &["spsata_negotiated_linkspeed"]));
+            let link = sps(d, &["spsata_negotiated_linkspeed"]);
+            if let Some(g) = link.as_deref().and_then(leading_num) {
+                let b = g * 1e9 * 0.8 / 8.0; // "6 Gigabit", 8b/10b
+                p.io_max = Some((b, b));
+            }
+            p.opt("Link", link);
             p.opt("Medium", sps(d, &["spsata_medium_type"]));
             p.opt(
                 "TRIM",
@@ -1217,6 +1240,8 @@ impl Prober {
             if let Some((r, w)) = bsd.as_ref().and_then(|b| dio.get(b)).copied() {
                 throughput(&mut p, r, w);
             }
+            p.usage = storage_usage(inv).get(&p.title).copied();
+            p.capacity = size.map(|s| s as f64);
             out.push(p);
         }
         out
@@ -1295,10 +1320,13 @@ impl Prober {
                 if !cur.is_null() {
                     p.opt("PHY mode", sps(cur, &["spairport_network_phymode"]));
                     p.opt("Channel", sps(cur, &["spairport_network_channel"]));
-                    p.opt(
-                        "Tx rate",
-                        sps(cur, &["spairport_network_rate"]).map(|r| format!("{r} Mb/s")),
-                    );
+                    let rate = sps(cur, &["spairport_network_rate"]);
+                    p.io_max = rate
+                        .as_deref()
+                        .and_then(leading_num)
+                        .filter(|r| *r > 0.0)
+                        .map(|r| (r * 1e6 / 8.0, r * 1e6 / 8.0));
+                    p.opt("Tx rate", rate.map(|r| format!("{r} Mb/s")));
                     p.opt(
                         "Security",
                         sps(cur, &["spairport_security_mode"]).map(|s| sp_word(&s)),
@@ -1327,7 +1355,9 @@ impl Prober {
                 for l in o.lines() {
                     let l = l.trim();
                     if let Some(s) = l.strip_prefix("status: ") {
-                        p.metric(s.to_string());
+                        if s != "active" {
+                            p.metric(s.to_string()); // only when it isn't up
+                        }
                         p.prop("State", s);
                         let speed = p.link.map_or(0, |l| l.1);
                         p.link = Some((s == "active", speed));
@@ -1350,7 +1380,6 @@ impl Prober {
                     self.rate(&format!("{ifn}:tx"), tx),
                 ) {
                     p.io = Some((r, t));
-                    p.metric(format!("↓{} ↑{}", fmt_rate(r), fmt_rate(t)));
                     p.prop(
                         "Traffic",
                         format!("down {}  up {}", fmt_rate(r), fmt_rate(t)),
@@ -1527,10 +1556,17 @@ fn dmi(inv: &Inventory) -> HashMap<String, String> {
 
 fn dimms(inv: &Inventory, mem_use: Option<(u64, u64)>) -> Vec<Part> {
     let mut out = Vec::new();
+    // installed RAM as sold ("16 GB"), for the usage bars' total
+    let installed = inv
+        .sp("SPHardwareDataType")
+        .first()
+        .and_then(|h| sps(h, &["physical_memory"]))
+        .and_then(|m| size_text(&m));
     let usage = |p: &mut Part| {
         if let Some((used, total)) = mem_use {
             let pct = 100.0 * used as f64 / total.max(1) as f64;
-            p.metric(format!("{pct:.0}% used"));
+            p.usage = Some((used as f64, total as f64)); // system-wide, drawn as bars
+            p.capacity = installed;
             p.prop(
                 "System RAM in use",
                 format!("{} of {} ({pct:.0}%)", fmt_bin(used), fmt_bin(total)),
@@ -1716,7 +1752,7 @@ fn bios(inv: &Inventory) -> Part {
 }
 
 /// The internal battery, and what the battery controller knows about the
-/// power adapter (`AdapterDetails`: watts, volts, amps, name).
+/// power source (`AdapterDetails`: watts, volts, amps, name).
 fn battery(inv: &Inventory) -> (Vec<Part>, Adapter) {
     let Some(b) = run("ioreg", &["-r", "-w0", "-c", "AppleSmartBattery"]).and_then(|o| {
         parse_ioreg(&o)
@@ -1870,12 +1906,53 @@ fn battery(inv: &Inventory) -> (Vec<Part>, Adapter) {
             })
             .map(|w| format!("{w} W")),
     );
-    p.prop("Power adapter", if ac { "connected" } else { "unplugged" });
+    p.prop("Power source", if ac { "connected" } else { "unplugged" });
     let ad = b
         .get("AdapterDetails")
         .map(adapter_details)
         .unwrap_or_default();
     (vec![p], ad)
+}
+
+/// Space (used, total) per physical drive name, from SPStorageDataType.
+/// The volumes of one APFS container all report the container's size and
+/// free space, so each (size, free) pair counts once per drive.
+fn storage_usage(inv: &Inventory) -> HashMap<String, (f64, f64)> {
+    let mut seen = HashSet::new();
+    let mut m: HashMap<String, (f64, f64)> = HashMap::new();
+    for v in inv.sp("SPStorageDataType") {
+        let drive = v.get("physical_drive").get("device_name").str();
+        let (Some(drive), Some(size), Some(free)) = (
+            drive,
+            v.get("size_in_bytes").num(),
+            v.get("free_space_in_bytes").num(),
+        ) else {
+            continue;
+        };
+        if size <= 0.0 || !seen.insert((drive.clone(), size as u64, free as u64)) {
+            continue;
+        }
+        let e = m.entry(drive).or_default();
+        e.0 += size - free;
+        e.1 += size;
+    }
+    m
+}
+
+/// "8 GB", "1536 MB" → bytes.
+fn size_text(v: &str) -> Option<f64> {
+    let n = leading_num(v)?;
+    let u = v.to_ascii_uppercase();
+    let mul = if u.contains("TB") {
+        1024f64.powi(4)
+    } else if u.contains("GB") {
+        1024f64.powi(3)
+    } else if u.contains("MB") {
+        1024f64.powi(2)
+    } else {
+        return None;
+    };
+    Some(n * mul)
 }
 
 /// "spdisplays_2880x1864Retina" → "2880 x 1864".

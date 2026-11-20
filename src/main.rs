@@ -8,6 +8,8 @@ mod json;
 mod keymap;
 mod model;
 mod nl80211;
+#[cfg(target_os = "linux")]
+mod nvml;
 mod platform;
 mod probe;
 mod probe_macos;

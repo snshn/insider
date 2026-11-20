@@ -32,7 +32,7 @@ pub enum Kind {
     /// Slot-only kind: an Ethernet jack on the board's edge, showing the link
     /// and activity of the LAN controller it is wired to (`link`).
     Rj45,
-    /// What powers the machine: a power adapter (laptops, mini PCs, dev
+    /// What powers the machine: a power source (laptops, mini PCs, dev
     /// boards) or a power supply unit (desktops, servers).
     Power,
 }
@@ -135,6 +135,22 @@ pub struct Part {
     pub link: Option<(bool, u32)>,
     /// Power input: plugged in (true) or not; None when unknown.
     pub online: Option<bool>,
+    /// How busy it is, 0..1: CPU and GPU utilization.
+    pub load: Option<f64>,
+    /// (used, total) in bytes: RAM in use, VRAM, drive space.
+    pub usage: Option<(f64, f64)>,
+    /// What the interface can move, (in, out) bytes/s, for `io` bars: a
+    /// drive's PCIe link, SATA or USB speed (the same both ways); a Wi-Fi
+    /// link's receive and send rates. (Ethernet uses `link`.)
+    pub io_max: Option<(f64, f64)>,
+    /// The size people know it by, bytes, for the total in usage bars: a
+    /// drive's capacity (128 GB, not the 116 GiB of its filesystem), the RAM
+    /// installed (32 GB, not the 30.x GiB the OS can use).
+    pub capacity: Option<f64>,
+    /// Fan PWM duty cycle, 0..1.
+    pub pwm: Option<f64>,
+    /// Memory (configured, rated) speed in MT/s.
+    pub speed: Option<(f64, f64)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -164,6 +180,12 @@ impl Part {
             io: None,
             link: None,
             online: None,
+            load: None,
+            usage: None,
+            io_max: None,
+            capacity: None,
+            pwm: None,
+            speed: None,
         }
     }
 
