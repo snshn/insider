@@ -153,6 +153,92 @@ pub(crate) fn replay(cmd: &str, args: &[&str]) -> Option<String> {
 /// process group. Terminals such as Terminal.app name the tty's foreground
 /// process in the window title; outside the foreground group, `ioreg`,
 /// `system_profiler` & co. don't flash up there while insider samples.
+/// What the OS says about the AC adapter, when it says anything.
+#[derive(Default, Debug)]
+pub(crate) struct Adapter {
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub volts: Option<f64>,
+    pub amps: Option<f64>,
+    pub watts: Option<f64>,
+}
+
+/// The power input part: an AC adapter or a PSU, plugged in or not.
+///
+/// An adapter when there is a battery, the chassis is portable or a mini
+/// PC, or it is a device-tree board (Raspberry Pi & co., `dev_board`); a
+/// PSU otherwise. A layout's `Unit` prop overrides this when drawing.
+/// Plugged-in state comes from the batteries' "AC adapter" property; with
+/// no battery the machine is running, so it is powered.
+pub(crate) fn power_part(
+    dmi: &HashMap<String, String>,
+    parts: &[Part],
+    dev_board: bool,
+    a: Adapter,
+) -> Part {
+    let bats: Vec<&Part> = parts
+        .iter()
+        .filter(|p| p.kind == Kind::Battery && p.present)
+        .collect();
+    let ac = bats.iter().find_map(|p| {
+        p.props
+            .iter()
+            .find(|(k, _)| k == "AC adapter")
+            .map(|(_, v)| v == "connected")
+    });
+    let chassis = dmi.get("chassis_type").and_then(|s| s.parse::<u32>().ok());
+    // SMBIOS chassis types: 8-14 and 30-32 portable, 35/36 mini/stick PC
+    let adapter = !bats.is_empty()
+        || matches!(chassis, Some(8..=12 | 14 | 30..=32 | 35 | 36))
+        || dev_board
+        || a.volts.is_some();
+    let online = if bats.is_empty() { Some(true) } else { ac };
+    let (title, tag) = if adapter {
+        ("AC adapter", "AC")
+    } else {
+        ("Power supply", "PSU")
+    };
+    let mut p = Part::new(
+        "power",
+        Kind::Power,
+        a.name.clone().unwrap_or_else(|| title.into()),
+    );
+    p.tag = tag.into();
+    p.bind = vec![
+        "power".into(),
+        if adapter { "adapter" } else { "psu" }.into(),
+    ];
+    p.online = online;
+    p.prop("Unit", title);
+    p.prop(
+        "State",
+        match online {
+            Some(true) if bats.is_empty() => "powered (no battery)",
+            Some(true) => "connected",
+            Some(false) => "unplugged",
+            None => "unknown",
+        },
+    );
+    p.opt("Type", a.kind.clone());
+    if online == Some(false) {
+        p.metric("unplugged");
+        return p;
+    }
+    if let Some(v) = a.volts {
+        p.metric(format!("{v:.1} V"));
+        p.prop("Output voltage", format!("{v:.2} V"));
+    }
+    if let Some(c) = a.amps {
+        p.prop("Current", format!("{c:.2} A"));
+    }
+    let watts = a.watts.or(a.volts.zip(a.amps).map(|(v, c)| v * c));
+    if let Some(w) = watts {
+        p.metric(format!("{w:.0} W"));
+        p.prop("Power", format!("{w:.0} W"));
+    }
+    p
+}
+
 /// Per-second rates from cumulative counters (bytes read, packets sent ...),
 /// shared by the probes. Below half a second between samples the rate is
 /// smoothed (exponential moving average), since short windows are jumpy.
@@ -886,6 +972,9 @@ impl Prober {
         parts.extend(audio());
         parts.extend(displays());
         parts.extend(self.other_pci(&pci, &claimed));
+        let dev_board = sp("/proc/device-tree/model").exists();
+        let power = power_part(&dmi, &parts, dev_board, usb_pd_adapter());
+        parts.push(power);
         Snapshot {
             parts,
             dmi,
@@ -2689,6 +2778,35 @@ fn bios(dmi: &HashMap<String, String>) -> Part {
     p
 }
 
+/// The adapter on a USB-C power-delivery port, when the kernel exposes it
+/// (e.g. `ucsi-source-psy-*`): a "USB" power supply that is online.
+fn usb_pd_adapter() -> Adapter {
+    for p in ls(sp("/sys/class/power_supply")) {
+        if rd(p.join("type")).as_deref() != Some("USB") || rdn::<u8>(p.join("online")) != Some(1) {
+            continue;
+        }
+        let micro = |k: &str| rdn::<f64>(p.join(k)).map(|v| v / 1e6).filter(|v| *v > 0.0);
+        let volts = micro("voltage_now");
+        let amps = micro("current_max").or_else(|| micro("current_now"));
+        if volts.is_none() && amps.is_none() {
+            continue;
+        }
+        // "usb_type" lists the types with the active one in brackets: "C [PD] PD_PPS"
+        let kind = rd(p.join("usb_type")).and_then(|t| {
+            t.split_whitespace()
+                .find(|w| w.starts_with('['))
+                .map(|w| format!("USB {}", w.trim_matches(|c| c == '[' || c == ']')))
+        });
+        return Adapter {
+            kind: kind.or(Some("USB".into())),
+            volts,
+            amps,
+            ..Adapter::default()
+        };
+    }
+    Adapter::default()
+}
+
 fn fans(hw: &[Hwmon]) -> Vec<Part> {
     let mut out = Vec::new();
     for h in hw {
@@ -2791,6 +2909,38 @@ pub(crate) fn usb_speed(s: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn power_for(chassis: Option<&str>, battery_ac: Option<&str>, dev_board: bool) -> Part {
+        let mut dmi = HashMap::new();
+        if let Some(c) = chassis {
+            dmi.insert("chassis_type".to_string(), c.to_string());
+        }
+        let mut parts = Vec::new();
+        if let Some(ac) = battery_ac {
+            let mut b = Part::new("bat", Kind::Battery, "Battery");
+            b.prop("AC adapter", ac);
+            parts.push(b);
+        }
+        power_part(&dmi, &parts, dev_board, Adapter::default())
+    }
+
+    #[test]
+    fn power_unit_and_state() {
+        let unit = |p: &Part| p.props.iter().find(|(k, _)| k == "Unit").unwrap().1.clone();
+        // desktop tower: a PSU, and running means powered
+        let p = power_for(Some("3"), None, false);
+        assert_eq!((unit(&p).as_str(), p.online), ("Power supply", Some(true)));
+        // laptop on battery
+        let p = power_for(Some("10"), Some("unplugged"), false);
+        assert_eq!((unit(&p).as_str(), p.online), ("AC adapter", Some(false)));
+        assert_eq!(p.metrics, ["unplugged"]);
+        // laptop with its battery removed, mini PC, Raspberry Pi: adapters
+        assert_eq!(unit(&power_for(Some("10"), None, false)), "AC adapter");
+        assert_eq!(unit(&power_for(Some("35"), None, false)), "AC adapter");
+        assert_eq!(unit(&power_for(None, None, true)), "AC adapter");
+        // no DMI, no device tree (VMs): a PSU
+        assert_eq!(unit(&power_for(None, None, false)), "Power supply");
+    }
 
     #[test]
     fn rates_smooth_only_short_windows() {

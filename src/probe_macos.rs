@@ -25,7 +25,7 @@ use crate::model::*;
 use crate::platform::{Options, Refresh};
 use crate::probe::{
     chassis_name, clean, clean_cpu_name, edid_props, edid_title, join, leading_num, panel_vendor,
-    parse_edid, run, throughput, usb_speed,
+    parse_edid, run, throughput, usb_speed, Adapter,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -737,7 +737,8 @@ impl Prober {
             parts.push(t2);
         }
         parts.push(bios(&inv));
-        parts.extend(battery(&inv));
+        let (bats, adapter) = battery(&inv);
+        parts.extend(bats);
         parts.extend(pm.fans.iter().enumerate().map(|(i, rpm)| {
             let mut p = Part::new(format!("fan:smc:{i}"), Kind::Fan, format!("Fan {}", i + 1));
             p.tag = "Fan".into();
@@ -778,6 +779,8 @@ impl Prober {
         if !inv.complete {
             notes.push("Wi-Fi and Bluetooth details are still loading…".into());
         }
+        let power = crate::probe::power_part(&dmi, &parts, false, adapter);
+        parts.push(power);
         Snapshot { parts, dmi, notes }
     }
 
@@ -1711,13 +1714,15 @@ fn bios(inv: &Inventory) -> Part {
     p
 }
 
-fn battery(inv: &Inventory) -> Vec<Part> {
+/// The internal battery, and what the battery controller knows about the
+/// AC adapter (`AdapterDetails`: watts, volts, amps, name).
+fn battery(inv: &Inventory) -> (Vec<Part>, Adapter) {
     let Some(b) = run("ioreg", &["-r", "-w0", "-c", "AppleSmartBattery"]).and_then(|o| {
         parse_ioreg(&o)
             .into_iter()
             .find(|x| x.get("CurrentCapacity").is_some())
     }) else {
-        return Vec::new();
+        return (Vec::new(), Adapter::default());
     };
     let sp = inv.sp("SPPowerDataType");
     let sp_bat = sp
@@ -1740,7 +1745,7 @@ fn battery(inv: &Inventory) -> Vec<Part> {
     p.bind = vec!["InternalBattery".into(), "BAT0".into()];
     if n("BatteryInstalled") == Some(0.0) {
         p.present = false;
-        return vec![p];
+        return (vec![p], Adapter::default());
     }
     let charging = n("IsCharging") == Some(1.0);
     let ac = n("ExternalConnected") == Some(1.0);
@@ -1865,7 +1870,31 @@ fn battery(inv: &Inventory) -> Vec<Part> {
             .map(|w| format!("{w} W")),
     );
     p.prop("AC adapter", if ac { "connected" } else { "unplugged" });
-    vec![p]
+    let ad = b
+        .get("AdapterDetails")
+        .map(adapter_details)
+        .unwrap_or_default();
+    (vec![p], ad)
+}
+
+/// `AdapterDetails` from ioreg, an old-style dictionary:
+/// `{"Watts"=30,"AdapterVoltage"=20000,"Current"=1500,"Name"="..."}`.
+/// Voltage in mV, current in mA; zeros mean "not reported".
+fn adapter_details(d: &str) -> Adapter {
+    let raw = |k: &str| {
+        let pat = format!("\"{k}\"=");
+        let rest = &d[d.find(&pat)? + pat.len()..];
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        Some(rest[..end].trim().trim_matches('"').to_string())
+    };
+    let num = |k: &str| raw(k)?.parse::<f64>().ok().filter(|v| *v > 0.0);
+    Adapter {
+        name: raw("Name").filter(|n| !n.is_empty()),
+        kind: raw("Description").filter(|n| !n.is_empty()),
+        volts: num("AdapterVoltage").map(|v| v / 1000.0),
+        amps: num("Current").map(|v| v / 1000.0),
+        watts: num("Watts"),
+    }
 }
 
 /// Built-in keyboard and trackpad (from `hidutil list`). Also returns the
@@ -2323,6 +2352,18 @@ fn pci_cards(inv: &Inventory) -> Vec<Part> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_details_dict() {
+        let a = adapter_details(
+            r#"{"FamilyCode"=18446744073172697098,"Watts"=70,"AdapterVoltage"=20000,"Current"=3500,"Description"="pd charger","Name"="70W USB-C Power Adapter"}"#,
+        );
+        assert_eq!(a.watts, Some(70.0));
+        assert_eq!(a.volts, Some(20.0));
+        assert_eq!(a.amps, Some(3.5));
+        assert_eq!(a.name.as_deref(), Some("70W USB-C Power Adapter"));
+        assert_eq!(adapter_details("{}").volts, None);
+    }
 
     fn sensors(v: &[(&str, f64)]) -> Vec<(String, f64)> {
         v.iter().map(|(n, t)| (n.to_string(), *t)).collect()

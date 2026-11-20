@@ -1535,6 +1535,7 @@ fn draw(cv: &mut Cv, r: Rect, slot: Option<&SlotDef>, part: Option<&Part>, ctx: 
         (Kind::Speaker, Some(p)) => draw_speaker(cv, r, p, ctx),
         (Kind::Microphone, Some(p)) => draw_mic(cv, r, p, ctx),
         (Kind::Touchpad, Some(p)) => draw_touchpad(cv, r, p, ctx),
+        (Kind::Power, Some(p)) => draw_power(cv, r, p, slot, ctx),
         (Kind::Camera, p) if p.is_some() || soldered => draw_camera(cv, r, p, ctx),
         (Kind::Dimm, Some(p)) => draw_dimm(cv, r, p, ctx),
         (Kind::Ssd, Some(p)) if p.tag.starts_with("NVMe") || slot_kind == Some(Kind::Ssd) => {
@@ -1837,6 +1838,124 @@ fn keycaps(
         }
     }
     true
+}
+
+/// The power input: a PSU (metal box, fan grille) or an AC adapter (brick
+/// with wall prongs), with a status LED and the readings, or the layout's
+/// `Output` when the OS reports none. Unplugged adapters are drawn dim.
+fn draw_power(cv: &mut Cv, r: Rect, p: &Part, slot: Option<&SlotDef>, ctx: &Ctx) {
+    if r.width < 6 || r.height < 3 {
+        return draw_chip(cv, r, Kind::Power, Some(p), ctx);
+    }
+    let prop = |k: &str| {
+        p.props
+            .iter()
+            .find(|(a, _)| a == k)
+            .map(|(_, v)| v.as_str())
+    };
+    let unit = slot
+        .and_then(|s| s.props.get("Unit"))
+        .map(|u| u.to_ascii_lowercase())
+        .unwrap_or_else(|| prop("Unit").unwrap_or("").to_ascii_lowercase());
+    let psu = unit.contains("psu") || unit.contains("supply");
+    let on = p.online != Some(false);
+    let (body, ink) = match (psu, on) {
+        (true, _) => (Color::Rgb(48, 50, 55), HI),
+        (false, true) => (Color::Rgb(30, 30, 33), HI),
+        (false, false) => (Color::Rgb(24, 24, 26), DIMTXT),
+    };
+    // adapters get two wall prongs sticking out on the left
+    let r = if psu {
+        r
+    } else {
+        let py = r.y as i32 + r.height as i32 / 2;
+        let prong = Style::new().fg(Color::Rgb(185, 185, 190));
+        for y in [py - 1, py + (r.height >= 5) as i32] {
+            cv.text(r.x as i32, y, "══", 2, prong);
+        }
+        Rect::new(r.x + 2, r.y, r.width - 2, r.height)
+    };
+    cv.bg(r, body);
+    cv.frame(
+        r,
+        &ROUND,
+        if ctx.sel {
+            edge_style(true)
+        } else {
+            Style::new().fg(lighten(body, 50))
+        },
+    );
+    let mut inner = Rect::new(
+        r.x + 1,
+        r.y + 1,
+        r.width.saturating_sub(2),
+        r.height.saturating_sub(2),
+    );
+    if psu && inner.height >= 3 && inner.width >= 16 {
+        // fan grille: a disc of dots on the left
+        let d = inner.height.min(inner.width / 3) as i32;
+        let (cx, cy) = (inner.x as i32 + d, inner.y as i32 + d / 2);
+        let st = Style::new().fg(lighten(body, 40)).bg(body);
+        for y in 0..d.max(1) {
+            for x in 0..2 * d {
+                let (dx, dy) = ((x - d) as f64 / 2.0, (y - d / 2) as f64);
+                let rr = (d as f64 / 2.0).max(1.0);
+                if dx * dx + dy * dy <= rr * rr {
+                    cv.put(
+                        cx - d + x,
+                        cy - d / 2 + y,
+                        if (x + y) % 2 == 0 { '·' } else { ' ' },
+                        st,
+                    );
+                }
+            }
+        }
+        let used = 2 * d as u16 + 1;
+        inner = Rect::new(
+            inner.x + used,
+            inner.y,
+            inner.width.saturating_sub(used),
+            inner.height,
+        );
+    }
+    // text: title, readings (or the layout's rating), state with an LED
+    let readings = if on && !p.metrics.is_empty() {
+        p.metrics.join(" · ")
+    } else if on {
+        slot.and_then(|s| s.props.get("Output"))
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let (led, state) = match p.online {
+        Some(false) => (Color::Rgb(70, 70, 75), "unplugged"),
+        _ if psu => (LED_LINK, "on"),
+        _ => (LED_LINK, "connected"),
+    };
+    let mut lines: Vec<(String, Style)> = vec![(
+        if psu {
+            "PSU".to_string()
+        } else {
+            p.title.clone()
+        },
+        Style::new().fg(ink).add_modifier(Modifier::BOLD),
+    )];
+    if !readings.is_empty() {
+        lines.push((readings, Style::new().fg(ink)));
+    }
+    lines.push((format!("● {state}"), Style::new().fg(DIMTXT)));
+    let n = lines.len().min(inner.height as usize);
+    let y0 = inner.y as i32 + (inner.height as i32 - n as i32) / 2;
+    for (i, (txt, st)) in lines.iter().take(n).enumerate() {
+        let w = (txt.chars().count() as i32).min(inner.width as i32);
+        let x = inner.x as i32 + (inner.width as i32 - w) / 2;
+        let y = y0 + i as i32;
+        cv.text(x, y, txt, w, st.bg(body));
+        if i == n - 1 {
+            cv.put(x, y, '●', Style::new().fg(led).bg(body));
+        }
+    }
 }
 
 fn draw_speaker(cv: &mut Cv, r: Rect, p: &Part, ctx: &Ctx) {
@@ -2239,8 +2358,11 @@ fn scene(cv: &mut Cv, area: Rect, app: &App, hits: &mut Vec<(Rect, String)>) {
         else {
             continue;
         };
-        if app.asg.slots[si].iter().all(|&i| !parts[i].present) {
-            continue; // nothing there to cable up
+        if app.asg.slots[si]
+            .iter()
+            .all(|&i| !parts[i].present || parts[i].online == Some(false))
+        {
+            continue; // nothing there to cable up, or an unplugged adapter
         }
         let (src, dst) = (xf.slot(s), xf.slot(&b.slots[to]));
         let sel = app.asg.slots[si].iter().any(|&i| app.is_sel(&parts[i].id))
@@ -2703,6 +2825,9 @@ fn details(app: &App) -> (String, Vec<Line<'static>>) {
             kv("Soldered", if s.soldered { "yes" } else { "no" }),
         ]
         .concat();
+        for (k, val) in &s.props {
+            v.extend(kv(k, val));
+        }
         let mut ps: Vec<&Part> = app.asg.slots[si]
             .iter()
             .map(|&i| &parts[i])
@@ -2750,6 +2875,20 @@ fn details(app: &App) -> (String, Vec<Line<'static>>) {
         );
     };
     let mut v = part_lines(p);
+    // what the layout says about the slot this part sits in
+    let pi = parts.iter().position(|q| q.id == key);
+    let slot = pi.and_then(|pi| {
+        let si = app.asg.slots.iter().position(|s| s.contains(&pi))?;
+        app.board().slots.get(si)
+    });
+    if let Some(s) = slot.filter(|s| !s.props.is_empty()) {
+        v.push(Line::raw(""));
+        v.push(Line::styled("From the layout", Style::new().fg(DIMTXT)));
+        v.push(Line::raw(""));
+        for (k, val) in &s.props {
+            v.extend(kv(k, val));
+        }
+    }
     if p.kind == Kind::Board && (!app.snap.notes.is_empty() || !app.load_errors.is_empty()) {
         v.push(Line::raw(""));
         v.push(Line::styled(

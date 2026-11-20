@@ -492,6 +492,8 @@ impl Prober {
         parts.extend(audio(&inv));
         parts.extend(displays(&inv, &live));
         parts.extend(other_pci(&inv, &pci_addr, &prop, &claimed_pci));
+        let power = crate::probe::power_part(&dmi, &parts, false, Default::default());
+        parts.push(power);
 
         let mut notes = Vec::new();
         if inv.is_null() {

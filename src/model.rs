@@ -32,10 +32,13 @@ pub enum Kind {
     /// Slot-only kind: an Ethernet jack on the board's edge, showing the link
     /// and activity of the LAN controller it is wired to (`link`).
     Rj45,
+    /// What powers the machine: an AC adapter (laptops, mini PCs, dev
+    /// boards) or a power supply unit (desktops, servers).
+    Power,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 23] = [
+    pub const ALL: [Kind; 24] = [
         Kind::Board,
         Kind::Cpu,
         Kind::Gpu,
@@ -59,6 +62,7 @@ impl Kind {
         Kind::Connector,
         Kind::Pcie,
         Kind::Rj45,
+        Kind::Power,
     ];
 
     pub fn name(self) -> &'static str {
@@ -86,6 +90,7 @@ impl Kind {
             Kind::Connector => "connector",
             Kind::Pcie => "pcie",
             Kind::Rj45 => "rj45",
+            Kind::Power => "power",
         }
     }
 
@@ -128,6 +133,8 @@ pub struct Part {
     pub io: Option<(f64, f64)>,
     /// Network link: (up, speed in Mb/s or 0 when unknown), for port LEDs.
     pub link: Option<(bool, u32)>,
+    /// Power input: plugged in (true) or not; None when unknown.
+    pub online: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -156,6 +163,7 @@ impl Part {
             cores: Vec::new(),
             io: None,
             link: None,
+            online: None,
         }
     }
 
