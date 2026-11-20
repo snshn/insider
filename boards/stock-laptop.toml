@@ -14,7 +14,7 @@ generic = true
 width = 160
 height = 50
 color = "#123524"
-pcb = { x = 68, y = 10, w = 92, h = 28 }
+pcb = { x = 68, y = 10, w = 92, h = 32 }
 
 # A real layout would add one or more [[match]] tables, e.g.
 # [[match]]
@@ -26,19 +26,19 @@ pcb = { x = 68, y = 10, w = 92, h = 28 }
 [[slot]]
 id = "camera"
 kind = "camera"
-x = 27
-y = 0
-w = 10
-h = 2
+x = 8
+y = 1
+w = 26
+h = 1
 link = "camc"
 label = "Camera"
 
 [[slot]]
 id = "mic"
 kind = "microphone"
-x = 39
+x = 38
 y = 0
-w = 6
+w = 14
 h = 2
 link = "camc"
 label = "Mic"
@@ -46,10 +46,10 @@ label = "Mic"
 [[slot]]
 id = "screen"
 kind = "display"
-x = 0
-y = 3
-w = 64
-h = 21
+x = 4
+y = 4
+w = 56
+h = 18
 soldered = true
 bind = ["internal"]
 link = "edp"
@@ -60,9 +60,9 @@ label = "Screen"
 [[slot]]
 id = "keyboard"
 kind = "keyboard"
-x = 3
-y = 26
-w = 58
+x = 1
+y = 24
+w = 62
 h = 9
 soldered = true
 link = "kbc"
@@ -71,19 +71,19 @@ label = "Keyboard"
 [[slot]]
 id = "spk_l"
 kind = "speaker"
-x = 3
-y = 36
-w = 15
+x = 2
+y = 34
+w = 17
 h = 6
 link = "spkc"
-label = "Speaker (left)"
+label = "Speaker (L)"
 
 [[slot]]
 id = "touchpad"
 kind = "touchpad"
-x = 20
-y = 36
-w = 24
+x = 22
+y = 34
+w = 20
 h = 6
 soldered = true
 link = "tpc"
@@ -92,19 +92,19 @@ label = "Touchpad"
 [[slot]]
 id = "spk_r"
 kind = "speaker"
-x = 46
-y = 36
-w = 15
+x = 45
+y = 34
+w = 17
 h = 6
 link = "spkc"
-label = "Speaker (right)"
+label = "Speaker (R)"
 
 [[slot]]
 id = "bat0"
 kind = "battery"
-x = 5
-y = 44
-w = 54
+x = 8
+y = 42
+w = 48
 h = 6
 link = "batc"
 label = "Battery"
@@ -120,7 +120,7 @@ w = 16
 h = 8
 soldered = true
 link = "fanc1"
-label = "FAN 1"
+label = "Fan 1"
 
 [[slot]]
 id = "fan1"
@@ -131,7 +131,7 @@ w = 16
 h = 8
 soldered = true
 link = "fanc2"
-label = "FAN 2"
+label = "Fan 2"
 
 # ---------------------------------------------------------------- mainboard (PCB origin x = 68, y = 10)
 
@@ -209,7 +209,7 @@ label = "FAN"
 id = "batc"
 kind = "connector"
 x = 80
-y = 35
+y = 39
 w = 6
 h = 2
 soldered = true
@@ -221,7 +221,7 @@ kind = "cpu"
 x = 78
 y = 14
 w = 23
-h = 13
+h = 15
 soldered = true
 label = "CPU"
 
@@ -231,7 +231,7 @@ kind = "gpu"
 x = 104
 y = 14
 w = 23
-h = 13
+h = 10
 soldered = true
 label = "GPU"
 
@@ -240,7 +240,7 @@ id = "pch"
 kind = "chipset"
 x = 130
 y = 12
-w = 10
+w = 12
 h = 4
 soldered = true
 label = "PCH"
@@ -250,7 +250,7 @@ id = "bios"
 kind = "bios"
 x = 130
 y = 18
-w = 10
+w = 12
 h = 3
 soldered = true
 label = "BIOS"
@@ -258,9 +258,9 @@ label = "BIOS"
 [[slot]]
 id = "chips"
 kind = "pci"
-x = 143
+x = 145
 y = 12
-w = 13
+w = 11
 h = 9
 soldered = true
 catchall = true
@@ -270,7 +270,7 @@ label = ""
 id = "ssd0"
 kind = "ssd"
 x = 78
-y = 27
+y = 30
 w = 21
 h = 3
 edge = "left"
@@ -280,7 +280,7 @@ label = "M.2 SSD 1"
 id = "ssd1"
 kind = "ssd"
 x = 78
-y = 31
+y = 34
 w = 21
 h = 3
 edge = "left"
@@ -289,49 +289,49 @@ label = "M.2 SSD 2"
 [[slot]]
 id = "dimm0"
 kind = "dimm"
-x = 101
-y = 27
-w = 23
-h = 5
+x = 102
+y = 30
+w = 24
+h = 4
 edge = "bottom"
 label = "SODIMM A"
 
 [[slot]]
 id = "dimm1"
 kind = "dimm"
-x = 101
-y = 32
-w = 23
-h = 5
+x = 102
+y = 35
+w = 24
+h = 4
 edge = "bottom"
 label = "SODIMM B"
 
 [[slot]]
 id = "wifi"
 kind = "wifi"
-x = 126
-y = 27
-w = 15
-h = 4
+x = 129
+y = 30
+w = 17
+h = 5
 edge = "left"
 label = "M.2 Wi-Fi"
 
 [[slot]]
 id = "lan"
 kind = "ethernet"
-x = 126
-y = 32
-w = 15
-h = 3
+x = 129
+y = 36
+w = 12
+h = 4
 soldered = true
 label = "LAN"
 
 [[slot]]
 id = "usbint"
 kind = "usb-internal"
-x = 142
-y = 27
-w = 10
+x = 148
+y = 31
+w = 8
 h = 3
 multi = true
 label = "int USB"
@@ -367,7 +367,7 @@ label = "USB"
 id = "usb3"
 kind = "usb"
 x = 157
-y = 31
+y = 35
 w = 3
 h = 2
 label = "USB-C"
@@ -379,19 +379,19 @@ label = "USB-C"
 [[slot]]
 id = "adapter"
 kind = "power"
-x = 124
-y = 40
-w = 30
-h = 8
+x = 140
+y = 44
+w = 16
+h = 4
 link = "dcin"
-label = "Power source"
+label = "Power Source"
 props = { Unit = "adapter" }
 
 [[slot]]
 id = "dcin"
 kind = "connector"
 x = 146
-y = 35
+y = 39
 w = 7
 h = 2
 soldered = true
@@ -404,7 +404,7 @@ label = "DC-IN"
 id = "igpu"
 kind = "gpu"
 x = 79
-y = 23
+y = 25
 w = 21
 h = 3
 soldered = true

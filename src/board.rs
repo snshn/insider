@@ -102,9 +102,6 @@ pub struct BoardDef {
     /// aren't a plain rectangle. One outline is drawn around the union.
     #[serde(default)]
     pub pcb_extra: Vec<RectDef>,
-    /// Draw copper traces between chips and slots (default: yes).
-    #[serde(default = "yes")]
-    pub traces: bool,
     /// PCB color, "#rrggbb".
     #[serde(default)]
     pub color: Option<String>,
@@ -118,10 +115,6 @@ pub struct BoardDef {
     pub id: String,
     #[serde(skip)]
     pub source: String,
-}
-
-fn yes() -> bool {
-    true
 }
 
 fn default_form() -> String {

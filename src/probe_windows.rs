@@ -1346,12 +1346,12 @@ fn bios(inv: &Json, dmi: &HashMap<String, String>) -> Part {
     let g = |k: &str| dmi.get(k).cloned();
     let fw = inv.get("fw").str().unwrap_or_default();
     let uefi = fw.eq_ignore_ascii_case("UEFI");
-    let kind = if uefi { "UEFI BIOS" } else { "BIOS" };
+    let kind = if uefi { "UEFI" } else { "BIOS" };
     let mut p = Part::new(
         "bios",
         Kind::Bios,
         match g("bios_version") {
-            Some(v) => format!("{kind} {v}"),
+            Some(v) => format!("{kind} {}", crate::model::vee(&v)),
             None => kind.to_string(),
         },
     );
@@ -1711,6 +1711,10 @@ fn usb(
         if let Some(port) = d.loc.as_deref().and_then(usb_port) {
             p.bind = vec![port.clone()];
             p.prop("Location", format!("hub {port}"));
+        }
+        if let Some((name, form)) = crate::model::known_usb(&d.vid, &d.pid) {
+            p.form = Some(form.into());
+            p.tag = name.into();
         }
         p.prop("ID", format!("{}:{}", d.vid, d.pid));
         p.opt("Manufacturer", d.maker.clone());

@@ -226,9 +226,9 @@ pub(crate) fn power_part(
         || a.volts.is_some();
     let online = if bats.is_empty() { Some(true) } else { ac };
     let (title, tag) = if adapter {
-        ("Power source", "Adapter")
+        ("Power Source", "Adapter")
     } else {
-        ("Power supply", "PSU")
+        ("Power Supply", "PSU")
     };
     let mut p = Part::new(
         "power",
@@ -662,9 +662,7 @@ fn memdevs_from_udev(out: &str) -> Vec<MemDev> {
                 part_no: g("PART_NUMBER"),
                 serial: g("SERIAL_NUMBER"),
                 rank: g("RANK"),
-                voltage_mv: g("CONFIGURED_VOLTAGE")
-                    .and_then(|s| s.parse().ok())
-                    .filter(|v| *v > 0),
+                voltage_mv: g("CONFIGURED_VOLTAGE").and_then(|s| millivolts(&s)),
                 width: g("TOTAL_WIDTH").map(|w| format!("{w} bit")),
             }
         })
@@ -712,11 +710,7 @@ fn memdevs_from_dmidecode(out: &str) -> Vec<MemDev> {
             part_no: g("Part Number"),
             serial: g("Serial Number"),
             rank: g("Rank"),
-            voltage_mv: m
-                .get("Configured Voltage")
-                .and_then(|s| leading_num(s))
-                .map(|f| (f * 1000.0).round() as u32)
-                .filter(|v| *v > 0),
+            voltage_mv: m.get("Configured Voltage").and_then(|s| millivolts(s)),
             width: g("Total Width"),
         });
     }
@@ -2129,6 +2123,7 @@ impl Prober {
             let pid = rd(d.join("idProduct")).unwrap_or_default();
             let mut classes: Vec<&'static str> = Vec::new();
             let mut drivers: Vec<String> = Vec::new();
+            let mut mtp = false;
             if class != "00" && class != "ef" && !class.is_empty() {
                 classes.push(usb_class(&class));
             }
@@ -2139,6 +2134,10 @@ impl Prober {
                 let c = usb_class(&rd(e.join("bInterfaceClass")).unwrap_or_default());
                 if !classes.contains(&c) {
                     classes.push(c);
+                }
+                // Android phones say MTP on their file-transfer interface
+                if rd(e.join("interface")).is_some_and(|i| i.contains("MTP")) {
+                    mtp = true;
                 }
                 if let Some(dr) = link_base(e.join("driver")) {
                     if !drivers.contains(&dr) {
@@ -2182,6 +2181,20 @@ impl Prober {
             p.tag = classes.first().copied().unwrap_or("USB").to_string();
             if classes.contains(&"Video") {
                 p.tag = "Camera".into();
+                // recording: some process has one of its /dev/video* open
+                p.prop("In use", if video_in_use(&n) { "yes" } else { "no" });
+            }
+            // phones and tablets: named and drawn as what they are, not by
+            // the class they borrow for photos ("Imaging") or files
+            let known =
+                crate::model::known_usb(&vid, &pid).or_else(|| mtp.then_some(("Phone", "phone")));
+            if let Some((name, form)) = known {
+                p.form = Some(form.into());
+                p.tag = match product.as_deref() {
+                    // "iPhone", "Pixel 8": the product string, when it's short
+                    Some(pr) if pr.chars().count() <= 14 && !pr.contains("MTP") => pr.into(),
+                    _ => name.into(),
+                };
             }
             let root = n.split('.').next().unwrap_or(&n).to_string();
             p.bind = vec![root, n.clone()];
@@ -2700,8 +2713,41 @@ fn inputs(dmi: &HashMap<String, String>) -> (Vec<Part>, HashSet<String>) {
 
 /// "45%" / "muted" from wpctl (PipeWire) or amixer (ALSA).
 /// The sound card's own level for a mixer control: (percent, switched off).
-fn alsa_level(ctl: &str) -> Option<(f64, bool)> {
-    let o = run("amixer", &["-c", "0", "sget", ctl])?;
+/// Whether any process has a video device of USB device `usb` ("1-6") open,
+/// i.e. the camera is recording: its /dev/video* nodes from sysfs, then
+/// every readable /proc/<pid>/fd. Only the user's own processes are
+/// readable without root, which covers the usual case (a browser, a call).
+fn video_in_use(usb: &str) -> bool {
+    let iface = format!("/{usb}:");
+    let nodes: Vec<String> = ls(sp("/sys/class/video4linux"))
+        .into_iter()
+        .filter(|v| canon(v.join("device")).is_some_and(|d| d.to_string_lossy().contains(&iface)))
+        .map(|v| format!("/dev/{}", fname(&v)))
+        .collect();
+    if nodes.is_empty() {
+        return false;
+    }
+    ls("/proc").into_iter().any(|pid| {
+        fname(&pid).chars().all(|c| c.is_ascii_digit())
+            && ls(pid.join("fd")).iter().any(|fd| {
+                fs::read_link(fd).is_ok_and(|t| nodes.iter().any(|n| t.as_os_str() == n.as_str()))
+            })
+    })
+}
+
+/// A memory voltage as udev ("1.2", volts since systemd prints the SMBIOS
+/// millivolts divided by 1000) or dmidecode ("1.2 V") give it, or in
+/// millivolts ("1200") as some tools do: millivolts, None for 0/unknown.
+fn millivolts(s: &str) -> Option<u32> {
+    let v = leading_num(s)?;
+    let mv = if v < 10.0 { v * 1000.0 } else { v };
+    // DDR runs between ~0.5 and ~2 V; anything else is a placeholder
+    Some(mv.round() as u32).filter(|v| (400..=2500).contains(v))
+}
+
+fn alsa_level(card: u32, ctl: &str) -> Option<(f64, bool)> {
+    let c = card.to_string();
+    let o = run("amixer", &["-c", &c, "sget", ctl])?;
     let l = o.lines().find(|l| l.contains('%'))?;
     let pct = l
         .split('[')
@@ -2720,8 +2766,9 @@ fn alsa_level(ctl: &str) -> Option<(f64, bool)> {
 /// `alsamixer` changes) are separate: for the microphone the signal goes
 /// through both, so the level is their product, and muted if either is.
 /// For speakers PipeWire drives the card's Master itself, so its volume
-/// alone counts.
-fn volume(source: bool) -> Option<String> {
+/// alone counts. `card` is the ALSA card with the internal pins (not always
+/// card 0: that can be the GPU's HDMI audio, which has no capture controls).
+fn volume(source: bool, card: u32) -> Option<String> {
     let target = if source {
         "@DEFAULT_AUDIO_SOURCE@"
     } else {
@@ -2733,12 +2780,12 @@ fn volume(source: bool) -> Option<String> {
     });
     let card = if source {
         // the capture level, and an "Internal Mic" control where the codec has one
-        ["Capture", "Internal Mic"]
+        ["Capture", "Internal Mic", "Dmic0"]
             .iter()
-            .filter_map(|c| alsa_level(c))
+            .filter_map(|c| alsa_level(card, c))
             .reduce(|a, b| (a.0.min(b.0), a.1 || b.1))
     } else if pw.is_none() {
-        alsa_level("Master")
+        alsa_level(card, "Master")
     } else {
         None
     };
@@ -2757,11 +2804,15 @@ fn volume(source: bool) -> Option<String> {
 fn audio() -> Vec<Part> {
     let mut codecs = Vec::new();
     let (mut spk, mut mic, mut dmic) = (0, 0, false);
+    // the cards with the built-in speakers and microphone
+    let (mut spk_card, mut mic_card) = (None, None);
     for card in ls(sp("/proc/asound")) {
         let n = fname(&card);
         if !n.starts_with("card") || !n[4..].chars().all(|c| c.is_ascii_digit()) || n.len() == 4 {
             continue;
         }
+        let num: u32 = n[4..].parse().unwrap_or(0);
+        let (s0, m0, d0) = (spk, mic, dmic);
         for f in ls(&card) {
             let fnm = fname(&f);
             if fnm.starts_with("codec#") {
@@ -2778,17 +2829,27 @@ fn audio() -> Vec<Part> {
                 }
             }
         }
+        if spk > s0 {
+            spk_card.get_or_insert(num);
+        }
+        if mic > m0 || dmic != d0 {
+            mic_card.get_or_insert(num);
+        }
     }
-    let card = rd(sp("/proc/asound/cards")).and_then(|c| {
-        c.lines()
-            .next()
+    let (spk_card, mic_card) = (spk_card.unwrap_or(0), mic_card.unwrap_or(0));
+    // " 0 [PCH            ]: HDA-Intel - HDA Intel PCH"
+    let cards = rd(sp("/proc/asound/cards")).unwrap_or_default();
+    let card_name = |n: u32| {
+        cards
+            .lines()
+            .find(|l| l.trim_start().starts_with(&format!("{n} [")))
             .and_then(|l| l.split(" - ").nth(1))
             .map(|s| s.trim().to_string())
-    });
+    };
     let codec = codecs.first().cloned();
     let mut out = Vec::new();
     if spk > 0 {
-        let vol = volume(false);
+        let vol = volume(false, spk_card);
         for (id, side) in [("speaker:l", "left"), ("speaker:r", "right")] {
             let mut p = Part::new(id, Kind::Speaker, format!("Speaker ({side})"));
             p.tag = "Speaker".into();
@@ -2798,7 +2859,7 @@ fn audio() -> Vec<Part> {
             }
             p.prop("Channel", side);
             p.opt("Codec", codec.clone());
-            p.opt("Sound card", card.clone());
+            p.opt("Sound card", card_name(spk_card));
             out.push(p);
         }
     }
@@ -2813,7 +2874,7 @@ fn audio() -> Vec<Part> {
             },
         );
         p.tag = "Mic".into();
-        if let Some(v) = volume(true) {
+        if let Some(v) = volume(true, mic_card) {
             p.metric(v.clone());
             p.prop("Input level", v);
         }
@@ -2826,7 +2887,7 @@ fn audio() -> Vec<Part> {
             },
         );
         p.opt("Codec", codec);
-        p.opt("Sound card", card);
+        p.opt("Sound card", card_name(mic_card));
         out.push(p);
     }
     out
@@ -2860,7 +2921,7 @@ pub(crate) fn nvidia_props(p: &mut Part, nv: &HashMap<String, String>) {
         p.prop("VRAM", format!("{u:.0} / {t:.0} MiB"));
     }
     if let Some(w) = f("power.draw").and_then(|v| v.parse::<f64>().ok()) {
-        p.metric(format!("{w:.0} W"));
+        p.metric(format!("{w:.1} W"));
         p.prop("Power draw", format!("{w:.1} W"));
     }
     p.opt("Memory clock", f("clocks.mem").map(|c| format!("{c} MHz")));
@@ -2925,12 +2986,13 @@ fn read_dmi() -> HashMap<String, String> {
 fn bios(dmi: &HashMap<String, String>) -> Part {
     let g = |k: &str| dmi.get(k).cloned();
     let efi = sp("/sys/firmware/efi");
-    let fw = if efi.exists() { "UEFI BIOS" } else { "BIOS" };
+    // "UEFI v1.04": the firmware type, and its version so an old one shows
+    let fw = if efi.exists() { "UEFI" } else { "BIOS" };
     let mut p = Part::new(
         "bios",
         Kind::Bios,
         match g("bios_version") {
-            Some(v) => format!("{fw} {v}"),
+            Some(v) => format!("{fw} {}", crate::model::vee(&v)),
             None => fw.to_string(),
         },
     );
@@ -3215,21 +3277,31 @@ tmpfs 100 1 99 1% /run
     }
 
     #[test]
+    fn memory_voltage_in_volts_or_millivolts() {
+        assert_eq!(millivolts("1.2"), Some(1200));
+        assert_eq!(millivolts("1.2 V"), Some(1200));
+        assert_eq!(millivolts("1200"), Some(1200));
+        assert_eq!(millivolts("0"), None);
+        assert_eq!(millivolts("0.001"), None);
+        assert_eq!(millivolts("Unknown"), None);
+    }
+
+    #[test]
     fn power_unit_and_state() {
         let unit = |p: &Part| p.props.iter().find(|(k, _)| k == "Unit").unwrap().1.clone();
         // desktop tower: a PSU, and running means powered
         let p = power_for(Some("3"), None, false);
-        assert_eq!((unit(&p).as_str(), p.online), ("Power supply", Some(true)));
+        assert_eq!((unit(&p).as_str(), p.online), ("Power Supply", Some(true)));
         // laptop on battery
         let p = power_for(Some("10"), Some("unplugged"), false);
-        assert_eq!((unit(&p).as_str(), p.online), ("Power source", Some(false)));
+        assert_eq!((unit(&p).as_str(), p.online), ("Power Source", Some(false)));
         assert_eq!(p.metrics, ["unplugged"]);
         // laptop with its battery removed, mini PC, Raspberry Pi: adapters
-        assert_eq!(unit(&power_for(Some("10"), None, false)), "Power source");
-        assert_eq!(unit(&power_for(Some("35"), None, false)), "Power source");
-        assert_eq!(unit(&power_for(None, None, true)), "Power source");
+        assert_eq!(unit(&power_for(Some("10"), None, false)), "Power Source");
+        assert_eq!(unit(&power_for(Some("35"), None, false)), "Power Source");
+        assert_eq!(unit(&power_for(None, None, true)), "Power Source");
         // no DMI, no device tree (VMs): a PSU
-        assert_eq!(unit(&power_for(None, None, false)), "Power supply");
+        assert_eq!(unit(&power_for(None, None, false)), "Power Supply");
     }
 
     #[test]

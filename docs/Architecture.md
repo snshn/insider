@@ -127,7 +127,7 @@ pci display camera keyboard touchpad speaker microphone connector pcie rj45`.
 | `rpm` | fans |
 | `form` | `SODIMM` / `DIMM` / `CAMM2`… (drives the RAM shape and the laptop guess) |
 | `cores` | `Vec<Core { id, temp, ghz, load }>`, one per physical core (CPU) |
-| `io` | bytes/s for activity LEDs: (read, write) for drives incl. USB mass storage, (received, sent) for network cards |
+| `io` | bytes/s for activity LEDs and R/W, D/U bars: (read, write) for drives incl. USB mass storage, (received, sent) for network cards |
 | `link` | network link (up, Mb/s or 0 when unknown), for the RJ45 jack's LEDs |
 
 `Snapshot { parts, dmi, notes }`. `notes` are human hints, such as "run with
@@ -156,7 +156,7 @@ optional and called through `run()`.
 | fans | every hwmon `fan*_input` |
 | displays | `/sys/class/drm/card*-*` with status connected; EDID parsed (vendor PNP id, model strings 0xFC/0xFE, size, native mode + refresh from the first detailed timing); backlight from `/sys/class/backlight`; bind keys = connector type (`eDP`, `HDMI-A`…) and `internal`/`external` |
 | keyboard / touchpad | `/proc/bus/input/devices`; keyboard = a node with `kbd` + `leds` handlers that is internal (i8042, I2C, host, or a USB device that is hardwired or whose name contains the DMI `sys_vendor`; Razer's built-in keyboard is USB); touchpad by name or the INPUT_PROP_POINTER bit; Caps/Num/Scroll lock LEDs, `kbd_backlight`; their USB devices are excluded from the USB list |
-| speakers / mic | `/proc/asound/card*/codec#*` `[Fixed] Speaker` / `[Fixed] Mic` pins, `pcm*c/info` DMIC; volume via `wpctl get-volume` (PipeWire), else `amixer` |
+| speakers / mic | `/proc/asound/card*/codec#*` `[Fixed] Speaker` / `[Fixed] Mic` pins, `pcm*c/info` DMIC; volume via `wpctl get-volume` (PipeWire) times the mixer level (`amixer -c N`, N being the card with those pins, not card 0, which can be the GPU's HDMI audio; Capture / Internal Mic / Dmic0 for the mic) |
 | USB | `/sys/bus/usb/devices/*` (no hubs); internal vs external from `port/connect_type` (hardwired/hotplug), then `removable`; Video class → camera (`Kind::Camera` when internal); names from sysfs strings, else `lsusb -d`; attached block devices |
 | other PCI | anything unclaimed off bus 00 (e.g. a Thunderbolt controller) → `Kind::Pci` |
 
@@ -207,27 +207,47 @@ catchall = true             # soldered area for parts no other slot took
 
 Parts carry gauges, drawn as bars (`bars_for` in ui.rs): `load` (CPU, GPU,
 and each CPU core, coloured green < 70% < yellow < 80% < orange < 90% < red),
-`usage` (used/total: RAM, VRAM, drive space; one gray bar like "3.8/32GB
+`usage` (used/total: RAM, VRAM, drive space; one gray bar like "3.8/32 GB
 (13%)", the total being `capacity`, the size people know it by: installed
-RAM in binary units, a drive's capacity in decimal ones; on a GPU, which has
-three bars, it reads "VRAM: 6.0/8GB (75%)"), `speed` (RAM
-configured vs. rated MT/s, green), `io` against `io_max` (in, out) or the
-link speed (network and drives: receive/read red and send/write blue side
-by side on one row, each as wide as its direction's maximum), `level`
-(speakers, and the microphone's input level; parsed from a "40%" metric when
-unset) and `pwm` (fans with a PWM output). Drive space comes from `df` on Linux (followed
+RAM in binary units, a drive's capacity in decimal ones; memory says its
+type, "DDR4: 7.5/32 GB (25%)" from the module's tag and "GDDR6: 6.0/8 GB
+(75%)" from `model::vram_type`, a table by GPU model since drivers don't
+report it), `speed` (a GPU's shader clock vs. its maximum, green), `io`
+against `io_max` (in, out) or the link speed (network and drives:
+receive/read red and send/write blue side by side on one row, the same
+width each, with a letter at the left end, R/W for drives and D/U for
+network cards, and the rate at the right end so neither moves), Wi-Fi
+signal (from the "-48 dBm" metric: -90 dBm is 0%, -30 dBm 100%, coloured
+the other way round from load, green when strong), `level` (speakers, and
+the microphone's input level, gray since any level is fine; parsed from a
+"40%" metric when unset) and `pwm` (fans with a PWM output). A GPU's load
+reads "Utilization: 97%". Exploded modules keep their bars.
+
+Exploded (flown-out) parts look as they do seated, a little bigger so their
+make and model fit inside (an SSD: "SSD" and its temperature, the model,
+R/W and space; RAM: "RAM", the usage bar, the model, the contacts; a long
+Wi-Fi card with its full name; a touchscreen as a clear film of dots).
+Nothing is written under them. Drive space comes from `df` on Linux (followed
 through partitions, LVM/LUKS and md to the disks) and SPStorageDataType on
 macOS; a drive's maximum from its PCIe link, SATA link or USB speed. Bars go
 at the bottom of a drawing and win over text when space runs out.
 
-Copper traces (`traces()`, off with `traces = false` in a layout) run under
-the parts: memory, discrete GPUs, the first x16 slot and the eDP connector
-to the CPU; the chipset to the CPU; everything else on the board to the
-chipset (or to the CPU/SoC when there's none).
+Labels go in the top-left corner, title-bar style (`title_bar`): on the
+border of framed chips (CPU, GPU, iGPU, PCH, BIOS, LAN...), fans and the
+board itself (its model at the left, its own temperature sensor at the
+right), and on the top row of M.2 cards ("SSD", "Wi-Fi") and RAM modules
+("RAM", the usage bar right under it). Unframed, they stay a cell in from
+the ends, where selection corners go. The temperature sits at
+the right end and a headline reading between them (`head_metric`): a CPU's
+or iGPU's clock in GHz, a discrete GPU's power ("74.8 W"); the inside then
+holds the model ("Intel UHD Graphics 630", "UEFI v1.04", "Ethernet") and
+the bars. When it's tight the name wins over the temperature.
 
 Internal USB devices are drawn on their own, with an arrow to their header
-(`plan_internal_usb`): Bluetooth as a badge on the Wi-Fi card, a
-touchscreen as a "Touchscreen" badge inside the built-in display, anything else as a chip in the
+(`plan_internal_usb`): Bluetooth as a "Bluetooth" strip along the Wi-Fi
+card's bottom row (the card keeps that row free, `Ctx::foot`), a
+touchscreen as a clear film over the built-in display's panel (a matrix of
+dots where nothing is written, its name in the corner), anything else as a chip in the
 nearest free spot of the board. Catch-all devices (audio, USB and SMBus
 controllers...) are a grid of pinned chips with short labels. A slot's
 cable to its connector is drawn dimmer when nothing in it is reported (a
@@ -255,7 +275,15 @@ the `cpu` slot that way.
 The keyboard prints the legends of the detected layout (`keymap.rs`: the
 macOS input source, XKB/console keymap on Linux, the preloaded layout ID on
 Windows; QWERTY when unknown) once keys are at least ~2 cells apart, and
-plain keycaps below that.
+plain keycaps below that. Keys get up to a three-cell cap, so "F10" fits;
+where a name doesn't, a one-cell legend stands in (①-⑫, ⎋, ⌦, ⌃, ⌥, ❖) so
+no key is left blank.
+
+USB phones and tablets are drawn as what they are, by vendor:product ID
+(`model::known_usb`; every iPhone since the 5 is 05ac:12a8) or an MTP
+interface: a phone on its side with its screen, name and front camera
+(Apple's pill or an Android punch hole), named by its product string
+("iPhone") rather than the USB class it borrows ("Imaging").
 
 **Choosing** (`choose`): `--board <file>` (for authoring) → the highest-
 scoring `[[match]]` → `stock-laptop` if `Snapshot::is_laptop()` → `stock-atx`.
@@ -313,10 +341,12 @@ connector), or `board`.
   are in the board's details. After each frame the hidden cursor is parked at
   the top-left, because macOS draws its input-source badge at the cursor.
 - **Body:** `scene()`, kept two columns and one row off the terminal's
-  edges. CPU and GPU labels and temperatures sit on their top border (on the
-  package's border when packaged, e.g. a CPU around its iGPU). Seated RAM and
-  M.2 cards hide their contacts; the exploded view shows them. The board's name is drawn last (`board_label()`), in
-  the first spot no slot covers, bottom-right first.
+  edges. Labels and temperatures sit on the top border (on the package's
+  border when packaged, e.g. a CPU around its iGPU, with a blank row
+  between the CPU's cores and the iGPU). Seated RAM and M.2 cards fill
+  their slot and hide their contacts; the exploded view shows them. The
+  board's name and temperature are drawn last (`board_label()`), on its
+  top edge.
 - **Detail panel:** 32 columns wide (`PANEL_W`), entries stacked as key, value,
   blank line; opened by Enter or a click. A click on empty space acts like Esc.
   It is only
@@ -355,23 +385,24 @@ off the contact strip on a given edge.
 ### Shapes (`draw()` dispatch)
 | kind | look |
 |---|---|
-| CPU | silver heat spreader with a heavy border; title and clock; a grid with one box per physical core showing temp, GHz and load |
-| GPU, chipset, BIOS, LAN, PCI, battery | `draw_chip`: label + temperature row, title, metrics; chips get pin marks on the border; the battery gets a charge bar, cell separators and a terminal nub |
-| DIMM | `aspect` by form (SODIMM 4.5, DIMM 8.5, CAMM2 ≈3.4 with a compression-connector pad band and screw holes); black DRAM packages, gold `▮` fingers with a key notch |
+| CPU | silver heat spreader with a heavy border; title, load bar, a grid with one box per physical core showing temp and load (boxes never touch) |
+| GPU, chipset, BIOS, LAN, PCI, battery | `draw_chip`: title bar on the border, the model, metrics and bars inside; chips get pin marks on the border; the battery gets a charge bar, cell separators and a terminal nub |
+| DIMM | seated: fills its slot (as long as its socket), the usage bar a cell in from its ends; exploded: `aspect` by form (SODIMM 4.5, DIMM 8.5, CAMM2 ≈3.4 with a compression-connector pad band and screw holes), gold `▮` fingers with a key notch; black DRAM packages |
 | M.2 SSD / Wi-Fi | contacts `≡` on the slot edge; SSD: black PCB, NAND packages, half-moon notch; Wi-Fi: green PCB, silver RF shield with text, two `◉` antenna sockets |
 | DIMM/M.2 slots | always drawn with a black plastic socket strip on the contact edge (`slot_connector`); empty M.2 slots also show the standoff `◉` |
 | connector | black plastic, a row of `╷` pins over the label; always as small as its label (label + 2 cells wide, 2 rows), whatever the scale. Squeezed to one row, just the label |
 | USB port / header | plain metal box; what's plugged in shows as its own part with an arrow into the port |
 | fan | braille rotor (7 swept blades, hub, shroud ring) in a rounded housing; it spins at `min(rpm/4000, 0.9)` rev/s. True RPM would alias at a ~15 fps redraw, so speed only scales with RPM |
-| display | bezel + panel whose glow scales with brightness; model, resolution, Hz, size, brightness |
-| camera | green strip, black sensor block with a blue lens glint |
+| display | slim bezel + panel whose glow scales with brightness; model, resolution, Hz, size, brightness |
+| camera | seated: a one-row strip, "Camera", the lens, the maker ("Azurewave"), and a red LED blinking once every 2 s while a process has its `/dev/video*` open (Linux: `video_in_use`, the "In use" prop); exploded: green board, black sensor block with a blue lens glint |
 | keyboard | keycaps as `▀` (top-half blocks, so the rows have gaps), staggered rows, space bar; Caps Lock LED; brighter with backlight |
 | touchpad | rounded pad with the vendor name |
-| speaker | grille of dots; the slot label ("Speaker (left)", over two lines or as "Speaker L" when narrow) above the volume bar (red text when muted) |
-| microphone | row of holes (red when muted) |
+| speaker | grille of dots; the slot label ("Speaker (L)", "Spk (L)" when narrow) above the gray volume bar (red text when muted) |
+| microphone | "Microphone" (red when muted) over the gray input level |
+| phone / tablet | on its side, cable towards the board: rounded rim, screen with the name, front camera at the far end |
 | exploded USB device | body + metal plug facing the board (white plug for internal devices); mass storage gets an activity LED at the far end |
 | RJ45 jack | plain metal shell; link LED (green at ≥ 1 Gb/s, amber below) and activity LED (amber, flickers with traffic) on the top corners. Selecting it selects the LAN controller it is wired to (`link`) |
-| drive activity LED | red, like a case's HDD light: on every NVMe/SATA/IDE drive (at the far end of an M.2 stick, on the bottom edge of a drive box) and USB mass storage |
+| drive activity LED | a round dot (a lit SMD LED looks round), blue: on every NVMe/SATA/IDE drive (at the far end of an M.2 stick, on the bottom edge of a drive box) and USB mass storage |
 
 Activity LEDs (`blink`): probes only see one I/O rate per refresh, so an LED
 flickers pseudo-randomly about 15 times a second, lit with a probability that

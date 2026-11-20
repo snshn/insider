@@ -85,7 +85,7 @@ y = 27
 w = 16
 h = 12
 link = "spkc"
-label = "Speaker (left)"
+label = "Speaker (L)"
 
 [[slot]]
 id = "bat0"
@@ -105,7 +105,7 @@ y = 27
 w = 16
 h = 12
 link = "spkc"
-label = "Speaker (right)"
+label = "Speaker (R)"
 
 [[slot]]
 id = "touchpad"
@@ -288,5 +288,5 @@ y = 40
 w = 30
 h = 8
 link = "magsafe"
-label = "Power source"
+label = "Power Source"
 props = { Unit = "adapter" }

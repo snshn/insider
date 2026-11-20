@@ -2133,6 +2133,10 @@ fn usb(inv: &Inventory, claimed: &HashSet<String>, dio: &HashMap<String, (f64, f
         } else {
             "USB".into()
         };
+        if let Some((name, form)) = crate::model::known_usb(&vid, &pid) {
+            p.form = Some(form.into());
+            p.tag = name.into();
+        }
         if let Some((root, full)) = place {
             p.bind = vec![root.clone()];
             if full != root {

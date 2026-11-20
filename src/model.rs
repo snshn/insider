@@ -283,3 +283,124 @@ pub fn fmt_hours(h: f64) -> String {
     let m = (h * 60.0).round() as u64;
     format!("{}h {:02}m", m / 60, m % 60)
 }
+
+/// A version as people write it: "1.04" -> "v1.04"; "F.42" stays.
+pub fn vee(v: &str) -> String {
+    if v.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("v{v}")
+    } else {
+        v.to_string()
+    }
+}
+
+/// Phones and tablets by USB vendor:product ID, for drawing them as what
+/// they are (`form` "phone"/"tablet") and naming them. Apple has used one ID
+/// (05ac:12a8) for every iPhone since the 5, so it can't say which model.
+pub fn known_usb(vid: &str, pid: &str) -> Option<(&'static str, &'static str)> {
+    let (vid, pid) = (vid.to_ascii_lowercase(), pid.to_ascii_lowercase());
+    let phone = |n| Some((n, "phone"));
+    let tablet = |n| Some((n, "tablet"));
+    match (vid.as_str(), pid.as_str()) {
+        ("05ac", "1290") => phone("iPhone"),
+        ("05ac", "1292") => phone("iPhone 3G"),
+        ("05ac", "1294") => phone("iPhone 3GS"),
+        ("05ac", "1297" | "129c") => phone("iPhone 4"),
+        ("05ac", "12a0") => phone("iPhone 4S"),
+        ("05ac", "12a8") => phone("iPhone"),
+        ("05ac", "1291" | "1293" | "1299" | "129e" | "12aa") => phone("iPod touch"),
+        (
+            "05ac",
+            "129a" | "129f" | "12a2" | "12a3" | "12a4" | "12a5" | "12a6" | "12a9" | "12ab",
+        ) => tablet("iPad"),
+        // Pixel / Nexus: MTP, PTP, with or without ADB
+        ("18d1", "4ee1" | "4ee2" | "4ee5" | "4ee6" | "4ee7" | "4ee9") => phone("Pixel"),
+        ("04e8", "6860" | "6865" | "6866" | "685c" | "685d") => phone("Galaxy"),
+        ("2a70", _) => phone("OnePlus"),
+        ("2717", "ff08" | "ff10" | "ff18" | "ff40" | "ff48" | "ff68") => phone("Xiaomi"),
+        ("22b8", "2e81" | "2e82" | "2e83" | "2e84" | "2e76") => phone("Motorola"),
+        ("12d1", "107e" | "1082" | "1083") => phone("Huawei"),
+        ("0fce", _) => phone("Xperia"),
+        ("1004", "631c" | "631d" | "633e" | "6344") => phone("LG"),
+        ("2a45", _) => phone("Meizu"),
+        ("0bb4", "0c02" | "0c87" | "0ff9") => phone("HTC"),
+        _ => None,
+    }
+}
+
+/// A graphics card's memory type, by model name: drivers don't report it
+/// (NVML and amdgpu sysfs have no field for it), but each model ships with
+/// one. None when unknown, or for integrated GPUs (they use system RAM).
+pub fn vram_type(name: &str) -> Option<&'static str> {
+    let n = name.to_ascii_uppercase();
+    let laptop = ["LAPTOP", "MAX-Q", "MOBILE", "MAX-P"]
+        .iter()
+        .any(|w| n.contains(w));
+    // the model number after a prefix: "RTX 3080 TI" -> (3080, true)
+    let num = |prefix: &str| -> Option<(u32, bool)> {
+        let rest = n.split(prefix).nth(1)?.trim_start();
+        let d: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let ti = rest[d.len()..].trim_start().starts_with("TI");
+        Some((d.parse().ok()?, ti))
+    };
+    if let Some((m, ti)) = num("RTX ").or_else(|| num("RTX")) {
+        return Some(match m {
+            5000.. => "GDDR7",
+            // the desktop high end got GDDR6X; laptops kept GDDR6
+            3080 | 3090 | 4070 | 4080 | 4090 if !laptop => "GDDR6X",
+            3070 if ti && !laptop => "GDDR6X",
+            _ => "GDDR6",
+        });
+    }
+    if let Some((m, ti)) = num("GTX ") {
+        return Some(match m {
+            1080 => "GDDR5X",
+            1660 if ti => "GDDR6",
+            1650 | 1660 if n.contains("SUPER") => "GDDR6",
+            _ => "GDDR5",
+        });
+    }
+    if n.contains("VEGA") || n.contains("RADEON VII") || n.contains("FURY") {
+        return Some("HBM2");
+    }
+    if let Some((m, _)) = num("RX ") {
+        return Some(match m {
+            400..=599 => "GDDR5",
+            5000..=9999 => "GDDR6",
+            _ => return None,
+        });
+    }
+    if n.contains("ARC A") || n.contains("ARC B") {
+        return Some("GDDR6");
+    }
+    if let Some((m, _)) = num("MX") {
+        return Some(if m == 450 { "GDDR6" } else { "GDDR5" });
+    }
+    None
+}
+
+#[cfg(test)]
+mod usb_tests {
+    #[test]
+    fn iphones_and_pixels_are_phones() {
+        assert_eq!(super::known_usb("05ac", "12a8"), Some(("iPhone", "phone")));
+        assert_eq!(super::known_usb("05AC", "12AB"), Some(("iPad", "tablet")));
+        assert_eq!(super::known_usb("18d1", "4ee2").map(|k| k.1), Some("phone"));
+        assert_eq!(super::known_usb("046d", "c52b"), None);
+    }
+
+    #[test]
+    fn vram_types_by_model() {
+        use super::vram_type as v;
+        assert_eq!(
+            v("NVIDIA GeForce RTX 2080 with Max-Q Design"),
+            Some("GDDR6")
+        );
+        assert_eq!(v("NVIDIA GeForce RTX 3080"), Some("GDDR6X"));
+        assert_eq!(v("NVIDIA GeForce RTX 3080 Laptop GPU"), Some("GDDR6"));
+        assert_eq!(v("NVIDIA GeForce GTX 1060 6GB"), Some("GDDR5"));
+        assert_eq!(v("NVIDIA GeForce GTX 1660 Ti"), Some("GDDR6"));
+        assert_eq!(v("NVIDIA GeForce RTX 5090"), Some("GDDR7"));
+        assert_eq!(v("AMD Radeon RX 6800 XT"), Some("GDDR6"));
+        assert_eq!(v("Intel UHD Graphics 630"), None);
+    }
+}

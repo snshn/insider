@@ -118,7 +118,7 @@ y = 1
 w = 8
 h = 3
 soldered = true
-label = "CPU_FAN"
+label = "CPU Fan"
 
 [[slot]]
 id = "dimm0"
@@ -252,7 +252,7 @@ y = 36
 w = 8
 h = 3
 soldered = true
-label = "SYS_FAN"
+label = "System Fan"
 
 [[slot]]
 id = "chips"
