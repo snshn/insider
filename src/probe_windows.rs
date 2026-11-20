@@ -41,7 +41,7 @@ const INVENTORY: &str = r#"
 $o = [ordered]@{}
 $o.cs = P (Q Win32_ComputerSystem) Manufacturer,Model,SystemFamily,SystemSKUNumber,PCSystemType,TotalPhysicalMemory
 $o.bb = P (Q Win32_BaseBoard) Manufacturer,Product,Version
-$o.bios = P (Q Win32_BIOS) Manufacturer,SMBIOSBIOSVersion,@{n='ReleaseDate';e={if ($_.ReleaseDate) { $_.ReleaseDate.ToString('yyyy-MM-dd') }}},SystemBiosMajorVersion,SystemBiosMinorVersion,EmbeddedControllerMajorVersion,EmbeddedControllerMinorVersion
+$o.bios = P (Q Win32_BIOS) Manufacturer,SerialNumber,SMBIOSBIOSVersion,@{n='ReleaseDate';e={if ($_.ReleaseDate) { $_.ReleaseDate.ToString('yyyy-MM-dd') }}},SystemBiosMajorVersion,SystemBiosMinorVersion,EmbeddedControllerMajorVersion,EmbeddedControllerMinorVersion
 $o.enc = P (Q Win32_SystemEnclosure) ChassisTypes,Manufacturer
 $o.os = P (Q Win32_OperatingSystem) Caption,Version,BuildNumber,CSName,@{n='Boot';e={Unix $_.LastBootUpTime}}
 $o.cpu = P (Q Win32_Processor) Name,Manufacturer,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,L2CacheSize,L3CacheSize,SocketDesignation,Caption,VirtualizationFirmwareEnabled
@@ -1044,6 +1044,7 @@ fn dmi(inv: &Json) -> HashMap<String, String> {
         ("bios_vendor", &bios, "Manufacturer"),
         ("bios_version", &bios, "SMBIOSBIOSVersion"),
         ("bios_date", &bios, "ReleaseDate"),
+        ("product_serial", &bios, "SerialNumber"),
         ("chassis_vendor", &enc, "Manufacturer"),
     ] {
         if let Some(v) = s(j, f) {
@@ -1118,6 +1119,7 @@ fn board(inv: &Json, live: &Json, dmi: &HashMap<String, String>, tz: &[(String, 
     p.opt("Product", g("product_name"));
     p.opt("Family", g("product_family"));
     p.opt("SKU", g("product_sku"));
+    p.opt("Serial number", g("product_serial"));
     p.opt("Board vendor", g("board_vendor"));
     p.opt("Board name", g("board_name"));
     p.opt("Board version", g("board_version"));
@@ -1497,7 +1499,7 @@ fn batteries(inv: &Json, live: &Json) -> Vec<Part> {
         p.opt("Manufacturer", s(&st, "ManufactureName"));
         p.opt("Model", s(&st, "DeviceName"));
         if let Some(a) = online {
-            p.prop("AC adapter", if a { "connected" } else { "unplugged" });
+            p.prop("Power adapter", if a { "connected" } else { "unplugged" });
         }
         out.push(p);
     }

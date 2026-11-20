@@ -32,7 +32,7 @@ pub enum Kind {
     /// Slot-only kind: an Ethernet jack on the board's edge, showing the link
     /// and activity of the LAN controller it is wired to (`link`).
     Rj45,
-    /// What powers the machine: an AC adapter (laptops, mini PCs, dev
+    /// What powers the machine: a power adapter (laptops, mini PCs, dev
     /// boards) or a power supply unit (desktops, servers).
     Power,
 }

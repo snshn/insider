@@ -374,7 +374,7 @@ label = "USB-C"
 
 # ---------------------------------------------------------------- power
 
-# The AC adapter brick, cabled to the DC-IN jack when plugged in. A layout
+# The power adapter brick, cabled to the DC-IN jack when plugged in. A layout
 # that knows the adapter can say so, e.g. props = { Output = "19.5 V ⎓ 3.33 A" }.
 [[slot]]
 id = "adapter"
@@ -384,7 +384,7 @@ y = 40
 w = 30
 h = 8
 link = "dcin"
-label = "AC adapter"
+label = "Power adapter"
 props = { Unit = "adapter" }
 
 [[slot]]
