@@ -1840,7 +1840,7 @@ fn keycaps(
     true
 }
 
-/// The power input: a PSU (metal box, fan grille) or an AC adapter (brick
+/// The power input: a PSU (metal box, fan grille) or a power adapter (brick
 /// with wall prongs), with a status LED and the readings, or the layout's
 /// `Output` when the OS reports none. Unplugged adapters are drawn dim.
 fn draw_power(cv: &mut Cv, r: Rect, p: &Part, slot: Option<&SlotDef>, ctx: &Ctx) {
@@ -1933,26 +1933,40 @@ fn draw_power(cv: &mut Cv, r: Rect, p: &Part, slot: Option<&SlotDef>, ctx: &Ctx)
         _ if psu => (LED_LINK, "on"),
         _ => (LED_LINK, "connected"),
     };
-    let mut lines: Vec<(String, Style)> = vec![(
-        if psu {
-            "PSU".to_string()
-        } else {
-            p.title.clone()
-        },
-        Style::new().fg(ink).add_modifier(Modifier::BOLD),
-    )];
-    if !readings.is_empty() {
-        lines.push((readings, Style::new().fg(ink)));
+    let title = if psu {
+        "PSU".to_string()
+    } else {
+        p.title.clone()
+    };
+    let bold = Style::new().fg(ink).add_modifier(Modifier::BOLD);
+    // the LED leads the status line, which shows the readings when there's
+    // no room for both: title / readings / ● state, or title / ● readings
+    let rows = inner.height as usize;
+    let mut lines: Vec<(String, Style, bool)> = Vec::new();
+    match (rows, readings.is_empty()) {
+        (0, _) => {}
+        (1, _) => lines.push((format!("● {title}"), bold, true)),
+        (2, false) => {
+            lines.push((title, bold, false));
+            lines.push((format!("● {readings}"), Style::new().fg(ink), true));
+        }
+        (_, true) => {
+            lines.push((title, bold, false));
+            lines.push((format!("● {state}"), Style::new().fg(DIMTXT), true));
+        }
+        _ => {
+            lines.push((title, bold, false));
+            lines.push((readings, Style::new().fg(ink), false));
+            lines.push((format!("● {state}"), Style::new().fg(DIMTXT), true));
+        }
     }
-    lines.push((format!("● {state}"), Style::new().fg(DIMTXT)));
-    let n = lines.len().min(inner.height as usize);
-    let y0 = inner.y as i32 + (inner.height as i32 - n as i32) / 2;
-    for (i, (txt, st)) in lines.iter().take(n).enumerate() {
+    let y0 = inner.y as i32 + (rows as i32 - lines.len() as i32) / 2;
+    for (i, (txt, st, has_led)) in lines.iter().enumerate() {
         let w = (txt.chars().count() as i32).min(inner.width as i32);
         let x = inner.x as i32 + (inner.width as i32 - w) / 2;
         let y = y0 + i as i32;
         cv.text(x, y, txt, w, st.bg(body));
-        if i == n - 1 {
+        if *has_led {
             cv.put(x, y, '●', Style::new().fg(led).bg(body));
         }
     }

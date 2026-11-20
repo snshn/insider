@@ -805,6 +805,7 @@ impl Prober {
             sps(hw, &["machine_model"]).or(inv.ctl("hw.model")),
         );
         p.opt("Model number", sps(hw, &["model_number"]));
+        p.opt("Serial number", sps(hw, &["serial_number"]));
         p.opt("Chip", sps(hw, &["chip_type"]));
         if let Some(c) = g("chassis_type").and_then(|s| s.parse::<u32>().ok()) {
             p.prop("Chassis", format!("{} ({c})", chassis_name(c)));
@@ -1715,7 +1716,7 @@ fn bios(inv: &Inventory) -> Part {
 }
 
 /// The internal battery, and what the battery controller knows about the
-/// AC adapter (`AdapterDetails`: watts, volts, amps, name).
+/// power adapter (`AdapterDetails`: watts, volts, amps, name).
 fn battery(inv: &Inventory) -> (Vec<Part>, Adapter) {
     let Some(b) = run("ioreg", &["-r", "-w0", "-c", "AppleSmartBattery"]).and_then(|o| {
         parse_ioreg(&o)
@@ -1869,12 +1870,20 @@ fn battery(inv: &Inventory) -> (Vec<Part>, Adapter) {
             })
             .map(|w| format!("{w} W")),
     );
-    p.prop("AC adapter", if ac { "connected" } else { "unplugged" });
+    p.prop("Power adapter", if ac { "connected" } else { "unplugged" });
     let ad = b
         .get("AdapterDetails")
         .map(adapter_details)
         .unwrap_or_default();
     (vec![p], ad)
+}
+
+/// "spdisplays_2880x1864Retina" → "2880 x 1864".
+fn native_res(v: &str) -> Option<String> {
+    let v = v.strip_prefix("spdisplays_").unwrap_or(v);
+    let (w, rest) = v.split_once('x')?;
+    let h: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    (w.parse::<u32>().is_ok() && !h.is_empty()).then(|| format!("{w} x {h}"))
 }
 
 /// `AdapterDetails` from ioreg, an old-style dictionary:
@@ -1890,7 +1899,13 @@ fn adapter_details(d: &str) -> Adapter {
     let num = |k: &str| raw(k)?.parse::<f64>().ok().filter(|v| *v > 0.0);
     Adapter {
         name: raw("Name").filter(|n| !n.is_empty()),
-        kind: raw("Description").filter(|n| !n.is_empty()),
+        kind: raw("Description").filter(|n| !n.is_empty()).map(|d| {
+            if d.to_ascii_lowercase().contains("pd") {
+                "USB Power Delivery".into()
+            } else {
+                d
+            }
+        }),
         volts: num("AdapterVoltage").map(|v| v / 1000.0),
         amps: num("Current").map(|v| v / 1000.0),
         watts: num("Watts"),
@@ -2275,9 +2290,18 @@ fn displays(inv: &Inventory) -> Vec<Part> {
             if let Some(e) = &edid {
                 edid_props(&mut p, e);
             } else {
-                if let Some(px) = sps(d, &["_spdisplays_pixels", "spdisplays_pixels"]) {
+                // Native panel pixels: "spdisplays_2880x1864Retina". The
+                // `_spdisplays_pixels` size is what macOS renders for the
+                // current (scaled) mode, e.g. 3420 x 2214 for "looks like
+                // 1710 x 1107", then scales down to the panel.
+                let native = sps(d, &["spdisplays_pixelresolution"]).and_then(|v| native_res(&v));
+                let rendered = sps(d, &["_spdisplays_pixels", "spdisplays_pixels"]);
+                if let Some(px) = native.clone().or_else(|| rendered.clone()) {
                     p.metric(px.replace(' ', ""));
                     p.prop("Native resolution", &px);
+                }
+                if native.is_some() {
+                    p.opt("Rendered at", rendered);
                 }
                 if let Some(v) = vend {
                     let code = edid_vendor(v);
@@ -2292,7 +2316,7 @@ fn displays(inv: &Inventory) -> Vec<Part> {
                         p.metric(format!("{hz:.0} Hz"));
                     }
                 }
-                p.prop("Current mode (UI)", r);
+                p.prop("Looks like", r);
             }
             p.opt(
                 "Retina",
@@ -2352,6 +2376,19 @@ fn pci_cards(inv: &Inventory) -> Vec<Part> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_resolution() {
+        assert_eq!(
+            native_res("spdisplays_2880x1864Retina").as_deref(),
+            Some("2880 x 1864")
+        );
+        assert_eq!(
+            native_res("spdisplays_1920x1080").as_deref(),
+            Some("1920 x 1080")
+        );
+        assert_eq!(native_res("spdisplays_yes"), None);
+    }
 
     #[test]
     fn adapter_details_dict() {
