@@ -85,7 +85,7 @@ binary is ad-hoc signed after building (Apple silicon won't run it otherwise).
 | `?` | help |
 | `q` | quit |
 
-Options: `--board <file>` (try a layout file you're writing), `--list-boards`, `--exploded`, `--interval <ms>`, `--color <truecolor|256>`,
+Options: `--board <file>` (try a layout file you're writing), `--list-boards`, `--exploded`, `--interval <time>` (how often to re-read the hardware: `500`, `250ms`, `0.5s`; default 500 ms), `--color <truecolor|256>`,
 `--no-nvidia-smi`, and `--dump`, which prints everything detected plus the
 slot assignment as plain text. That dump is the thing to share when a board
 needs a proper layout.

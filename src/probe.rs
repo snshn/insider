@@ -153,6 +153,36 @@ pub(crate) fn replay(cmd: &str, args: &[&str]) -> Option<String> {
 /// process group. Terminals such as Terminal.app name the tty's foreground
 /// process in the window title; outside the foreground group, `ioreg`,
 /// `system_profiler` & co. don't flash up there while insider samples.
+/// Per-second rates from cumulative counters (bytes read, packets sent ...),
+/// shared by the probes. Below half a second between samples the rate is
+/// smoothed (exponential moving average), since short windows are jumpy.
+#[derive(Default)]
+pub(crate) struct Rates {
+    /// key → (last counter value, when, last reported rate)
+    prev: HashMap<String, (f64, Instant, Option<f64>)>,
+}
+
+impl Rates {
+    pub(crate) fn rate(&mut self, key: &str, v: f64) -> Option<f64> {
+        const SMOOTH_BELOW: f64 = 0.5; // seconds
+        let now = Instant::now();
+        let r = self.prev.get(key).and_then(|&(pv, pt, last)| {
+            let dt = now.duration_since(pt).as_secs_f64();
+            let raw = (dt > 0.05 && v >= pv).then(|| (v - pv) / dt)?;
+            Some(match last {
+                // weight the new sample by its share of half a second
+                Some(l) if dt < SMOOTH_BELOW => {
+                    let a = dt / SMOOTH_BELOW;
+                    a * raw + (1.0 - a) * l
+                }
+                _ => raw,
+            })
+        });
+        self.prev.insert(key.to_string(), (v, now, r));
+        r
+    }
+}
+
 pub(crate) fn quiet(cmd: &str) -> Command {
     let mut c = Command::new(cmd);
     c.stdin(Stdio::null());
@@ -643,7 +673,7 @@ pub struct Prober {
     mem_source: String,
     spd: Vec<Spd>,
     notes: Vec<String>,
-    prev: HashMap<String, (f64, Instant)>,
+    rates: crate::probe::Rates,
     prev_cpu: HashMap<String, (u64, u64)>,
     nvidia: HashMap<String, HashMap<String, String>>,
     nvidia_at: Option<Instant>,
@@ -784,7 +814,7 @@ impl Prober {
             mem_source,
             spd,
             notes,
-            prev: HashMap::new(),
+            rates: Default::default(),
             prev_cpu: HashMap::new(),
             nvidia: HashMap::new(),
             nvidia_at: None,
@@ -794,13 +824,7 @@ impl Prober {
     }
 
     fn rate(&mut self, key: &str, v: f64) -> Option<f64> {
-        let now = Instant::now();
-        let r = self.prev.get(key).and_then(|(pv, pt)| {
-            let dt = now.duration_since(*pt).as_secs_f64();
-            (dt > 0.05 && v >= *pv).then(|| (v - pv) / dt)
-        });
-        self.prev.insert(key.to_string(), (v, now));
-        r
+        self.rates.rate(key, v)
     }
 
     fn pci_title(&self, d: &PciDev) -> String {
@@ -2767,6 +2791,28 @@ pub(crate) fn usb_speed(s: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rates_smooth_only_short_windows() {
+        use std::time::Duration;
+        let mut r = Rates::default();
+        let t0 = Instant::now();
+        // seed history by hand: counter 0 a second ago, last rate 100/s
+        r.prev
+            .insert("k".into(), (0.0, t0 - Duration::from_secs(1), Some(100.0)));
+        let v = r.rate("k", 300.0).unwrap(); // ~1 s window → raw ≈ 300
+        assert!((v - 300.0).abs() < 5.0, "{v}");
+        r.prev.insert(
+            "k".into(),
+            (
+                0.0,
+                Instant::now() - Duration::from_millis(250),
+                Some(100.0),
+            ),
+        );
+        let v = r.rate("k", 100.0).unwrap(); // raw ≈ 400, half-weighted with 100 → ≈ 250
+        assert!((v - 250.0).abs() < 25.0, "{v}");
+    }
 
     #[test]
     fn spd_ddr4_cl() {
