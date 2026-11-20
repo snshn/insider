@@ -107,7 +107,7 @@ kind = "cpu"
 x = 22
 y = 3
 w = 20
-h = 9
+h = 11
 label = "CPU socket"
 
 [[slot]]
@@ -264,3 +264,17 @@ h = 7
 soldered = true
 catchall = true
 label = ""
+
+# The CPU's integrated graphics, inside the CPU package (a slot inside
+# another slot makes the outer one a package). Bound to "integrated", so the
+# discrete GPU still goes to the GPU slot.
+[[slot]]
+id = "igpu"
+kind = "gpu"
+x = 23
+y = 10
+w = 18
+h = 3
+soldered = true
+bind = ["integrated"]
+label = "iGPU"

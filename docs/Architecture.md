@@ -175,7 +175,12 @@ machines you don't have, from a captured tree.
 Coordinates are in terminal cells at 1:1. A cell is about twice as tall as it
 is wide, so things are drawn about 2× wider than on a photo. The whole
 drawing is scaled uniformly to fit the view (max ×1.6 semi-exploded, ×1.4
-exploded).
+exploded). Two exceptions (`place`): connectors keep their natural size (just
+big enough for their label), and no two components ever touch. Where the
+layout or the rounding leaves two of them flush (or overlapping by a cell or
+two), the one bigger along that side gives up the cells, so there's always at
+least one cell of board between them. Slots inside another (a package) are
+left alone and clipped to their parent.
 
 ```toml
 name = "…"; form = "laptop" | "desktop"; generic = true|false
@@ -199,6 +204,34 @@ link = "edp"                # peripheral cabled to that slot (normally a `connec
                             # on an `rj45` jack: the LAN controller slot it shows
 catchall = true             # soldered area for parts no other slot took
 ```
+
+Parts carry gauges, drawn as bars (`bars_for` in ui.rs): `load` (CPU, GPU,
+and each CPU core, coloured green < 70% < yellow < 80% < orange < 90% < red),
+`usage` (used/total: RAM, VRAM, drive space; one gray bar like "3.8/32GB
+(13%)", the total being `capacity`, the size people know it by: installed
+RAM in binary units, a drive's capacity in decimal ones; on a GPU, which has
+three bars, it reads "VRAM: 6.0/8GB (75%)"), `speed` (RAM
+configured vs. rated MT/s, green), `io` against `io_max` (in, out) or the
+link speed (network and drives: receive/read red and send/write blue side
+by side on one row, each as wide as its direction's maximum), `level`
+(speakers, and the microphone's input level; parsed from a "40%" metric when
+unset) and `pwm` (fans with a PWM output). Drive space comes from `df` on Linux (followed
+through partitions, LVM/LUKS and md to the disks) and SPStorageDataType on
+macOS; a drive's maximum from its PCIe link, SATA link or USB speed. Bars go
+at the bottom of a drawing and win over text when space runs out.
+
+Copper traces (`traces()`, off with `traces = false` in a layout) run under
+the parts: memory, discrete GPUs, the first x16 slot and the eDP connector
+to the CPU; the chipset to the CPU; everything else on the board to the
+chipset (or to the CPU/SoC when there's none).
+
+Internal USB devices are drawn on their own, with an arrow to their header
+(`plan_internal_usb`): Bluetooth as a badge on the Wi-Fi card, a
+touchscreen as a "Touchscreen" badge inside the built-in display, anything else as a chip in the
+nearest free spot of the board. Catch-all devices (audio, USB and SMBus
+controllers...) are a grid of pinned chips with short labels. A slot's
+cable to its connector is drawn dimmer when nothing in it is reported (a
+fan the OS can't see is still there).
 
 A slot can carry `props = { Key = "value", ... }`: static facts the layout
 knows and the probes can't (an ATX connector's pin count, an adapter's rated
@@ -279,7 +312,10 @@ connector), or `board`.
   goes in the window title (`window_title()`), key help is under `?`, notes
   are in the board's details. After each frame the hidden cursor is parked at
   the top-left, because macOS draws its input-source badge at the cursor.
-- **Body:** `scene()`. The board's name is drawn last (`board_label()`), in
+- **Body:** `scene()`, kept two columns and one row off the terminal's
+  edges. CPU and GPU labels and temperatures sit on their top border (on the
+  package's border when packaged, e.g. a CPU around its iGPU). Seated RAM and
+  M.2 cards hide their contacts; the exploded view shows them. The board's name is drawn last (`board_label()`), in
   the first spot no slot covers, bottom-right first.
 - **Detail panel:** 32 columns wide (`PANEL_W`), entries stacked as key, value,
   blank line; opened by Enter or a click. A click on empty space acts like Esc.
@@ -294,8 +330,9 @@ connector), or `board`.
 2. Items go to the left or right column by the slot's x relative to the layout
    centre. A column is only allocated if it has items, so the board gets the
    space otherwise.
-3. Fit the layout into the middle area (`Xf`: offset + uniform scale) and draw
-   the PCB.
+3. Fit the layout into the middle area (`Xf`: offset + uniform scale, then
+   `place`: compact connectors, a gap around every component) and draw the
+   PCB.
 4. Stack the items in each column, aligned with their target slot where
    possible.
 5. Draw leader lines (item → slot) and cables (slot with `link` → connector)
@@ -323,17 +360,17 @@ off the contact strip on a given edge.
 | DIMM | `aspect` by form (SODIMM 4.5, DIMM 8.5, CAMM2 ≈3.4 with a compression-connector pad band and screw holes); black DRAM packages, gold `▮` fingers with a key notch |
 | M.2 SSD / Wi-Fi | contacts `≡` on the slot edge; SSD: black PCB, NAND packages, half-moon notch; Wi-Fi: green PCB, silver RF shield with text, two `◉` antenna sockets |
 | DIMM/M.2 slots | always drawn with a black plastic socket strip on the contact edge (`slot_connector`); empty M.2 slots also show the standoff `◉` |
-| connector | black plastic, a row of `╷` pins, label |
-| USB port / header | solid metal box with a dark opening; blue plug when something is plugged in. A header has two rows of pins |
+| connector | black plastic, a row of `╷` pins over the label; always as small as its label (label + 2 cells wide, 2 rows), whatever the scale. Squeezed to one row, just the label |
+| USB port / header | plain metal box; what's plugged in shows as its own part with an arrow into the port |
 | fan | braille rotor (7 swept blades, hub, shroud ring) in a rounded housing; it spins at `min(rpm/4000, 0.9)` rev/s. True RPM would alias at a ~15 fps redraw, so speed only scales with RPM |
 | display | bezel + panel whose glow scales with brightness; model, resolution, Hz, size, brightness |
 | camera | green strip, black sensor block with a blue lens glint |
 | keyboard | keycaps as `▀` (top-half blocks, so the rows have gaps), staggered rows, space bar; Caps Lock LED; brighter with backlight |
 | touchpad | rounded pad with the vendor name |
-| speaker | grille of dots, volume (red when muted) |
+| speaker | grille of dots; the slot label ("Speaker (left)", over two lines or as "Speaker L" when narrow) above the volume bar (red text when muted) |
 | microphone | row of holes (red when muted) |
 | exploded USB device | body + metal plug facing the board (white plug for internal devices); mass storage gets an activity LED at the far end |
-| RJ45 jack | metal shell; the opening holds a clear plug with gold contacts when the link is up; latch notch below; link LED (green at ≥ 1 Gb/s, amber below) and activity LED (amber, flickers with traffic) on the top corners. Selecting it selects the LAN controller it is wired to (`link`) |
+| RJ45 jack | plain metal shell; link LED (green at ≥ 1 Gb/s, amber below) and activity LED (amber, flickers with traffic) on the top corners. Selecting it selects the LAN controller it is wired to (`link`) |
 | drive activity LED | red, like a case's HDD light: on every NVMe/SATA/IDE drive (at the far end of an M.2 stick, on the bottom edge of a drive box) and USB mass storage |
 
 Activity LEDs (`blink`): probes only see one I/O rate per refresh, so an LED

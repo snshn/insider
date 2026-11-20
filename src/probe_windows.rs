@@ -476,6 +476,7 @@ impl Prober {
         let mut claimed_pci: HashSet<String> = HashSet::new();
         parts.push(self.cpu(&inv, &live, &tz, &pci_addr, &mut claimed_pci));
         parts.extend(self.gpus(&inv, &live, &pci_addr, &prop, &mut claimed_pci));
+        parts.extend(crate::probe::igpu_part(&parts));
         parts.extend(dimms(&inv, &live));
         let dio = self.disk_io(&live);
         let mut disks = self.disks(&inv, &dio);
@@ -600,7 +601,7 @@ impl Prober {
             p.metric(format!("{:.2} GHz", m / 1000.0));
         }
         if let Some((u, _)) = total {
-            p.metric(format!("{u:.0}% load"));
+            p.load = Some(u / 100.0); // drawn as a bar
             p.prop("Utilization", format!("{u:.1}%"));
         }
         // Group SMT siblings (numbered next to each other) when the split is
@@ -745,7 +746,7 @@ impl Prober {
             } else if ctrls.len() == 1 && !luid.is_empty() {
                 // with a single adapter the busiest LUID is it
                 let u = luid.values().cloned().fold(0.0, f64::max).min(100.0);
-                p.metric(format!("{u:.0}%"));
+                p.load = Some(u / 100.0);
                 p.prop("3D utilization", format!("{u:.0}%"));
             }
             out.push(p);
@@ -923,7 +924,9 @@ impl Prober {
                 s(&st, "LinkSpeed").map_or(0, |l| link_mbps(&l)),
             ));
             if let Some(state) = s(&st, "Status") {
-                p.metric(state.to_lowercase());
+                if !state.eq_ignore_ascii_case("up") {
+                    p.metric(state.to_lowercase()); // only when it isn't up
+                }
                 p.prop("State", state);
             }
             if let Some(ls) = s(&st, "LinkSpeed") {
@@ -960,7 +963,6 @@ impl Prober {
                         self.rate(&format!("{name}:tx"), tx),
                     ) {
                         p.io = Some((r, t));
-                        p.metric(format!("↓{} ↑{}", fmt_rate(r), fmt_rate(t)));
                         p.prop(
                             "Traffic",
                             format!("down {}  up {}", fmt_rate(r), fmt_rate(t)),
@@ -1181,6 +1183,8 @@ fn dimms(inv: &Json, live: &Json) -> Vec<Part> {
         .map(|(t, f)| ((t - f).max(0.0) as u64 * 1024, t as u64 * 1024));
     let mut out = Vec::new();
     let mods = inv.get("mem").items();
+    // installed RAM as sold (32 GB), for the usage bars' total
+    let installed: f64 = mods.iter().filter_map(|m| n(m, "Capacity")).sum();
     for (i, m) in mods.iter().enumerate() {
         let loc = s(m, "DeviceLocator");
         let bank = s(m, "BankLabel");
@@ -1217,7 +1221,8 @@ fn dimms(inv: &Json, live: &Json) -> Vec<Part> {
         p.metric(p.tag.clone());
         if let Some((used, total)) = mem_use {
             let pct = 100.0 * used as f64 / total.max(1) as f64;
-            p.metric(format!("{pct:.0}% used"));
+            p.usage = Some((used as f64, total as f64)); // system-wide, drawn as bars
+            p.capacity = (installed > 0.0).then_some(installed);
             p.prop(
                 "System RAM in use",
                 format!("{} of {} ({pct:.0}%)", fmt_bin(used), fmt_bin(total)),
@@ -1238,6 +1243,12 @@ fn dimms(inv: &Json, live: &Json) -> Vec<Part> {
                 .filter(|v| *v > 0.0)
                 .map(|v| format!("{v} MT/s")),
         );
+        if let (Some(c), Some(r)) = (
+            n(m, "ConfiguredClockSpeed").filter(|v| *v > 0.0),
+            n(m, "Speed").filter(|v| *v > 0.0),
+        ) {
+            p.speed = Some((c, r.max(c)));
+        }
         p.opt("Manufacturer", maker);
         p.opt("Part number", part_no);
         p.opt("Serial", s(m, "SerialNumber"));
@@ -1499,7 +1510,7 @@ fn batteries(inv: &Json, live: &Json) -> Vec<Part> {
         p.opt("Manufacturer", s(&st, "ManufactureName"));
         p.opt("Model", s(&st, "DeviceName"));
         if let Some(a) = online {
-            p.prop("Power adapter", if a { "connected" } else { "unplugged" });
+            p.prop("Power source", if a { "connected" } else { "unplugged" });
         }
         out.push(p);
     }
