@@ -61,6 +61,12 @@ pub struct SlotDef {
     /// Soldered area that takes every part no other slot wanted (drawn as chips).
     #[serde(default)]
     pub catchall: bool,
+    /// Static facts the layout knows and the probes can't, shown in the
+    /// details of the slot and of whatever sits in it, e.g.
+    /// `props = { Connector = "ATX 20+4-pin", Output = "19.5 V ⎓ 3.33 A" }`.
+    /// On a power slot, `Unit = "adapter"` or `"psu"` overrides the guess.
+    #[serde(default)]
+    pub props: std::collections::BTreeMap<String, String>,
     #[serde(skip)]
     pub k: Option<Kind>,
     #[serde(skip)]
@@ -396,7 +402,10 @@ pub fn assign(b: &BoardDef, parts: &[Part]) -> Assignment {
         }
         for pi in 0..parts.len() {
             let k = parts[pi].kind;
-            if !used[pi] && parts[pi].present && !matches!(k, Kind::Usb | Kind::Display) {
+            if !used[pi]
+                && parts[pi].present
+                && !matches!(k, Kind::Usb | Kind::Display | Kind::Power)
+            {
                 slots[si].push(pi);
                 used[pi] = true;
             }

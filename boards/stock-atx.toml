@@ -4,9 +4,45 @@
 name = "Generic ATX mainboard"
 form = "desktop"
 generic = true
-width = 90
+width = 122
 height = 40
 color = "#1c2733"
+pcb = { x = 0, y = 0, w = 90, h = 40 }
+
+# The PSU sits beside the board, cabled to the 24-pin ATX connector. Older
+# boards have 20 pins; say so in the connector's props.
+[[slot]]
+id = "psu"
+kind = "power"
+x = 94
+y = 2
+w = 28
+h = 12
+link = "atx24"
+label = "PSU"
+props = { Unit = "psu" }
+
+[[slot]]
+id = "atx24"
+kind = "connector"
+x = 75
+y = 3
+w = 12
+h = 2
+soldered = true
+label = "ATX 24"
+props = { Connector = "ATX 24-pin" }
+
+[[slot]]
+id = "eps"
+kind = "connector"
+x = 24
+y = 1
+w = 8
+h = 2
+soldered = true
+label = "EPS 8"
+props = { Connector = "EPS12V 8-pin (CPU power)" }
 
 [[slot]]
 id = "usb0"

@@ -200,6 +200,19 @@ link = "edp"                # peripheral cabled to that slot (normally a `connec
 catchall = true             # soldered area for parts no other slot took
 ```
 
+A slot can carry `props = { Key = "value", ... }`: static facts the layout
+knows and the probes can't (an ATX connector's pin count, an adapter's rated
+output), shown in the details of the slot and of whatever sits in it. On a
+`power` slot, `Unit = "psu"` or `"adapter"` decides the drawing, and
+`Output` is shown when the OS reports no adapter readings.
+
+The `power` part is built by `probe::power_part` on every platform: an AC
+adapter when there is a battery, a portable or mini-PC chassis, or a device
+tree (dev boards); a PSU otherwise. Plugged-in state comes from the battery
+(with no battery it is always powered); voltage/current/watts from macOS's
+`AdapterDetails` or Linux USB-C power delivery. An unplugged adapter is drawn
+dim and without its cable.
+
 A slot that lies entirely inside another slot belongs to it, like the GPU on
 an Apple silicon SoC: the outer slot is drawn as a package (substrate and
 outline around the whole rectangle), its own part above the inner slots, and

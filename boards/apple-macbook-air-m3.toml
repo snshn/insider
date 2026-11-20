@@ -276,3 +276,17 @@ w = 6
 h = 2
 soldered = true
 label = "BAT"
+
+# ---------------------------------------------------------------- power
+
+# USB-C / MagSafe adapter, drawn plugged into MagSafe
+[[slot]]
+id = "adapter"
+kind = "power"
+x = 4
+y = 40
+w = 30
+h = 8
+link = "magsafe"
+label = "Power adapter"
+props = { Unit = "adapter" }
