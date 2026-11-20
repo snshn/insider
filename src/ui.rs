@@ -1315,6 +1315,24 @@ fn look(k: Kind) -> Look {
     }
 }
 
+/// Charging animation for the empty part of a battery: sectors filling up
+/// left to right, over and over, in a dimmer shade of the charge colour so
+/// the real level stays readable in every frame.
+fn charge_sweep(cv: &mut Cv, empty: Rect, c: Color, t: f64) {
+    const PERIOD: f64 = 1.4; // seconds per sweep
+    let dim = match c {
+        // halfway to the empty cell colour
+        Color::Rgb(r, g, b) => Color::Rgb(r / 2 + 15, g / 2 + 15, b / 2 + 18),
+        c => c,
+    };
+    let sector = (empty.width / 8).max(1);
+    let sectors = empty.width.div_ceil(sector);
+    // sectors + 1 steps, so each sweep also shows an empty and a full frame
+    let shown = ((t / PERIOD).fract() * (sectors + 1) as f64) as u16;
+    let w = (shown * sector).min(empty.width);
+    cv.bg(Rect { width: w, ..empty }, dim);
+}
+
 /// Generic chip/box: label + temperature on the first row inside the border,
 /// then title and metrics.
 fn draw_chip(cv: &mut Cv, r: Rect, kind: Kind, p: Option<&Part>, ctx: &Ctx) {
@@ -1334,6 +1352,23 @@ fn draw_chip(cv: &mut Cv, r: Rect, kind: Kind, p: Option<&Part>, ctx: &Ctx) {
                 Color::Rgb(30, 105, 55)
             };
             cv.bg(Rect { width: w, ..inner }, c);
+            let charging = p.is_some_and(|p| {
+                p.props
+                    .iter()
+                    .any(|(k, v)| k == "Status" && v == "Charging")
+            });
+            if charging && w < inner.width {
+                charge_sweep(
+                    cv,
+                    Rect {
+                        x: inner.x + w,
+                        width: inner.width - w,
+                        ..inner
+                    },
+                    c,
+                    ctx.t,
+                );
+            }
             let step = (inner.width / 6).max(2) as usize;
             for x in (inner.x..inner.x + inner.width).step_by(step).skip(1) {
                 for y in inner.y..inner.y + inner.height {
