@@ -85,7 +85,7 @@ main()
  ├─ Prober::new()               one-off: lspci names, SMBIOS memory devices, SPD EEPROMs, notes
  ├─ prober.gather() → Snapshot  first sample (used to choose the layout)
  ├─ board::choose()             --board <file> | best [[match]] | stock-laptop / stock-atx
- ├─ thread: loop { sleep(interval); tx.send(prober.gather()) }     default 1000 ms
+ ├─ thread: loop { sleep until next tick; tx.send(prober.gather()) }  every 500 ms
  └─ event loop (every 60 ms):
       drain rx → App::set_snapshot (re-runs board::assign)
       terminal.draw(ui::draw_frame)   → scene() + details/help
@@ -95,7 +95,10 @@ main()
 - Probing runs on its own thread, so slow tools (`nvidia-smi`, `wpctl`) never
   block the UI.
 - The UI redraws about every 60 ms, even with no new data, so the fans can
-  spin smoothly. Only the probe runs on the slower refresh interval.
+  spin smoothly. Only the probe runs on the slower refresh interval, at a
+  steady rhythm (the interval is the period, not the pause between samples).
+  Rates (disk, network) come from `probe::Rates`, smoothed when samples are
+  under 0.5 s apart.
 - `Prober` keeps state between samples for rates: per-CPU `/proc/stat`
   deltas, disk sectors, network bytes, RAPL energy. The first sample has no
   rates.
@@ -336,7 +339,7 @@ orange below 85 °C, red above.
 
 ```
 insider [-b|--board FILE] [-l|--list-boards] [-d|--dump] [-e|--exploded]
-        [-i|--interval MS] [--no-nvidia-smi] [-h] [-V]
+        [-i|--interval TIME] [--no-nvidia-smi] [-h] [-V]
 ```
 - `--dump` prints the chosen layout and why, the DMI values, the slot→part
   assignment, and every part with its metrics, bind keys and props. It is the

@@ -24,7 +24,7 @@ use std::io;
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const HELP: &str = "\
 insider — realtime TUI hardware inspector
@@ -36,7 +36,8 @@ OPTIONS:
   -l, --list-boards           list known board layouts and exit
   -d, --dump                  print everything detected (plain text) and exit
   -e, --exploded              start in exploded view
-  -i, --interval <MS>         refresh interval in milliseconds (default 1000)
+  -i, --interval <TIME>       how often to re-read the hardware: 500, 500ms,
+                              0.5s (default 500ms, minimum 200ms)
       --color <truecolor|256> force colour depth (default: detect;
                               also settable via INSIDER_COLOR)
       --no-nvidia-smi         never run nvidia-smi
@@ -72,7 +73,7 @@ fn parse_args() -> Args {
         list: false,
         dump: false,
         exploded: false,
-        interval: 1000,
+        interval: 500,
         nvidia: true,
         color: None,
     };
@@ -84,11 +85,14 @@ fn parse_args() -> Args {
             "-d" | "--dump" => a.dump = true,
             "-e" | "--exploded" => a.exploded = true,
             "-i" | "--interval" => {
-                a.interval = it
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(1000)
-                    .max(200)
+                let v = it.next().unwrap_or_default();
+                match parse_interval(&v) {
+                    Some(ms) => a.interval = ms.max(200),
+                    None => {
+                        eprintln!("insider: --interval takes e.g. 500, 500ms or 0.5s, not {v:?}");
+                        std::process::exit(2)
+                    }
+                }
             }
             "--no-nvidia-smi" => a.nvidia = false,
             "--color" | "--colour" => {
@@ -161,10 +165,19 @@ fn main() -> io::Result<()> {
 
     let (tx, rx) = mpsc::channel();
     let interval = Duration::from_millis(args.interval);
-    thread::spawn(move || loop {
-        thread::sleep(interval);
-        if tx.send(prober.gather()).is_err() {
-            break;
+    // a steady rhythm: the interval is the period, however long a sample
+    // takes; after an overrun the next sample starts at once, no catch-up burst
+    thread::spawn(move || {
+        let mut next = Instant::now() + interval;
+        loop {
+            if let Some(wait) = next.checked_duration_since(Instant::now()) {
+                thread::sleep(wait);
+            }
+            // late (a slow sample, or the machine slept): count from now
+            next = next.max(Instant::now()) + interval;
+            if tx.send(prober.gather()).is_err() {
+                break;
+            }
         }
     });
 
@@ -237,6 +250,20 @@ fn run(
     }
 }
 
+/// Milliseconds from "500", "500ms", "0.5s" or "1s".
+fn parse_interval(v: &str) -> Option<u64> {
+    let v = v.trim().to_ascii_lowercase();
+    let (num, scale) = if let Some(n) = v.strip_suffix("ms") {
+        (n, 1.0)
+    } else if let Some(n) = v.strip_suffix('s') {
+        (n, 1000.0)
+    } else {
+        (v.as_str(), 1.0)
+    };
+    let x: f64 = num.trim().parse().ok()?;
+    (x.is_finite() && x > 0.0).then(|| (x * scale).round() as u64)
+}
+
 fn dump(snap: &model::Snapshot, b: &board::BoardDef, reason: &str) {
     println!(
         "layout: {} [{}, {}] ({}){} — {}",
@@ -304,5 +331,20 @@ fn dump(snap: &model::Snapshot, b: &board::BoardDef, reason: &str) {
         for n in &snap.notes {
             println!("  • {n}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_interval;
+
+    #[test]
+    fn intervals() {
+        assert_eq!(parse_interval("500"), Some(500));
+        assert_eq!(parse_interval("250ms"), Some(250));
+        assert_eq!(parse_interval("0.5s"), Some(500));
+        assert_eq!(parse_interval("1S"), Some(1000));
+        assert_eq!(parse_interval("fast"), None);
+        assert_eq!(parse_interval("-1"), None);
     }
 }

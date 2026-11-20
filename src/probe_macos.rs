@@ -623,7 +623,7 @@ pub struct Prober {
     inv: Refresh<Inventory>,
     root: bool,
     notes: Vec<String>,
-    prev: HashMap<String, (f64, Instant)>,
+    rates: crate::probe::Rates,
     pm_ok: bool,
     vol: Option<(Instant, Option<String>)>,
     nvidia: HashMap<String, HashMap<String, String>>,
@@ -642,7 +642,7 @@ impl Prober {
             inv,
             root,
             notes: Vec::new(),
-            prev: HashMap::new(),
+            rates: Default::default(),
             pm_ok: true,
             vol: None,
             nvidia: HashMap::new(),
@@ -675,13 +675,7 @@ impl Prober {
     }
 
     fn rate(&mut self, key: &str, v: f64) -> Option<f64> {
-        let now = Instant::now();
-        let r = self.prev.get(key).and_then(|(pv, pt)| {
-            let dt = now.duration_since(*pt).as_secs_f64();
-            (dt > 0.05 && v >= *pv).then(|| (v - pv) / dt)
-        });
-        self.prev.insert(key.to_string(), (v, now));
-        r
+        self.rates.rate(key, v)
     }
 
     fn powermetrics(&mut self, inv: &Inventory) -> Pm {

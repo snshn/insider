@@ -391,7 +391,7 @@ pub struct Prober {
     inv: Refresh<Json>,
     session: Option<Session>,
     session_failures: u32,
-    prev: HashMap<String, (f64, Instant)>,
+    rates: crate::probe::Rates,
     nvidia: HashMap<String, HashMap<String, String>>,
     nvidia_at: Option<Instant>,
 }
@@ -404,7 +404,7 @@ impl Prober {
             inv: Refresh::new(first, Duration::from_secs(30), inventory),
             session: None,
             session_failures: 0,
-            prev: HashMap::new(),
+            rates: Default::default(),
             nvidia: HashMap::new(),
             nvidia_at: None,
         }
@@ -413,13 +413,7 @@ impl Prober {
     pub fn settle(&self) {}
 
     fn rate(&mut self, key: &str, v: f64) -> Option<f64> {
-        let now = Instant::now();
-        let r = self.prev.get(key).and_then(|(pv, pt)| {
-            let dt = now.duration_since(*pt).as_secs_f64();
-            (dt > 0.05 && v >= *pv).then(|| (v - pv) / dt)
-        });
-        self.prev.insert(key.to_string(), (v, now));
-        r
+        self.rates.rate(key, v)
     }
 
     fn live(&mut self) -> Json {
